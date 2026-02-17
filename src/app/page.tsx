@@ -36,7 +36,7 @@ export default function Home() {
     <>
       <TodoHeader total={total} completed={completed} />
       <main className="max-w-2xl mx-auto py-2 px-2">
-        <div className="space-y-1">
+        <div className="space-y-0">
           {sections.map((section, idx) => (
             <TodoSection key={idx} section={section} defaultOpen={idx < 3} />
           ))}
