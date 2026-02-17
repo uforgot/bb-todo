@@ -5,12 +5,19 @@ import type { TodoItem as TodoItemType } from "@/lib/parser";
 
 interface TodoItemProps {
   item: TodoItemType;
+  onToggle?: (lineIndex: number, checked: boolean) => void;
 }
 
-export function TodoItem({ item }: TodoItemProps) {
+export function TodoItem({ item, onToggle }: TodoItemProps) {
   return (
-    <label className="flex items-start gap-3 py-1.5 cursor-default">
-      <Checkbox checked={item.checked} disabled className="mt-0.5" />
+    <label className="flex items-start gap-3 py-1.5 cursor-pointer">
+      <Checkbox
+        checked={item.checked}
+        onCheckedChange={(checked) => {
+          onToggle?.(item.line, !!checked);
+        }}
+        className="mt-0.5"
+      />
       <span
         className={`text-sm leading-relaxed ${
           item.checked ? "line-through text-muted-foreground" : ""

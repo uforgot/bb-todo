@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
+import { ToastProvider } from "@/components/ui/toast";
 import "./globals.css";
 
 const geist = Geist({ subsets: ["latin"] });
@@ -29,7 +30,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ko">
-      <body className={`${geist.className} antialiased`}>{children}</body>
+      <body className={`${geist.className} antialiased`}>
+        <ToastProvider>{children}</ToastProvider>
+      </body>
     </html>
   );
 }

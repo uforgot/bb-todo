@@ -53,6 +53,26 @@ export function parseTodoMd(content: string): TodoSection[] {
   return root;
 }
 
+export function applyToggles(
+  rawContent: string,
+  toggles: Map<number, boolean>
+): string {
+  const lines = rawContent.split("\n");
+
+  for (const [lineIndex, checked] of toggles) {
+    if (lineIndex < 0 || lineIndex >= lines.length) continue;
+    const line = lines[lineIndex];
+    // Replace [ ] with [x] or [x]/[X] with [ ]
+    if (checked) {
+      lines[lineIndex] = line.replace(/\[([ ])\]/, "[x]");
+    } else {
+      lines[lineIndex] = line.replace(/\[([xX])\]/, "[ ]");
+    }
+  }
+
+  return lines.join("\n");
+}
+
 export function countItems(sections: TodoSection[]): {
   total: number;
   completed: number;

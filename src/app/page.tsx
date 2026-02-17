@@ -5,10 +5,13 @@ import { countItems } from "@/lib/parser";
 import { TodoHeader } from "@/components/todo-header";
 import { TodoSection } from "@/components/todo-section";
 import { TodoSkeleton } from "@/components/todo-skeleton";
+import { PullToRefresh } from "@/components/pull-to-refresh";
+import { useToast } from "@/components/ui/toast";
 import { AlertCircle } from "lucide-react";
 
 export default function Home() {
-  const { sections, isLoading, isError } = useTodo();
+  const { showError } = useToast();
+  const { sections, isLoading, isError, toggle, refresh } = useTodo(showError);
   const { total, completed } = countItems(sections);
 
   if (isLoading) {
@@ -35,18 +38,25 @@ export default function Home() {
   return (
     <>
       <TodoHeader total={total} completed={completed} />
-      <main className="max-w-2xl mx-auto py-2 px-2">
-        <div className="space-y-0">
-          {sections.map((section, idx) => (
-            <TodoSection key={idx} section={section} defaultOpen={idx < 3} />
-          ))}
-        </div>
-        {sections.length === 0 && (
-          <p className="text-center text-muted-foreground py-8 text-sm">
-            TODO 항목이 없습니다
-          </p>
-        )}
-      </main>
+      <PullToRefresh onRefresh={refresh}>
+        <main className="max-w-2xl mx-auto py-2 px-2">
+          <div className="space-y-0">
+            {sections.map((section, idx) => (
+              <TodoSection
+                key={idx}
+                section={section}
+                defaultOpen={idx < 3}
+                onToggle={toggle}
+              />
+            ))}
+          </div>
+          {sections.length === 0 && (
+            <p className="text-center text-muted-foreground py-8 text-sm">
+              TODO 항목이 없습니다
+            </p>
+          )}
+        </main>
+      </PullToRefresh>
     </>
   );
 }
