@@ -8,7 +8,7 @@ export function BottomTabBar() {
   const pathname = usePathname();
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-10 bg-background border-t">
+    <nav className="fixed bottom-0 left-0 right-0 z-10 bg-background border-t" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
       <div className="flex max-w-2xl mx-auto">
         <Link
           href="/"

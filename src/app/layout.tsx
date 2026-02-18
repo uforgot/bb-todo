@@ -23,6 +23,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   themeColor: "#09090b",
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -35,7 +36,7 @@ export default function RootLayout({
       <body className={`${geist.className} antialiased`}>
         <ThemeProvider>
           <ToastProvider>
-            <div className="pb-14">{children}</div>
+            <div className="pb-[calc(3.5rem+env(safe-area-inset-bottom,0px))]">{children}</div>
             <BottomTabBar />
           </ToastProvider>
         </ThemeProvider>
