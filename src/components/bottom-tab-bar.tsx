@@ -17,7 +17,7 @@ export function BottomTabBar() {
           }`}
         >
           <ListTodo className="h-5 w-5" />
-          TODO
+          Todo
         </Link>
         <Link
           href="/archive"

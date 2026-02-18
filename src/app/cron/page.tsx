@@ -1,7 +1,13 @@
 "use client";
 
 import { CronSection } from "@/components/cron-section";
+import { TodoHeader } from "@/components/todo-header";
 
 export default function CronPage() {
-  return <CronSection />;
+  return (
+    <>
+      <TodoHeader total={0} completed={0} />
+      <CronSection />
+    </>
+  );
 }
