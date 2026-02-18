@@ -37,6 +37,7 @@ export function BottomTabBar() {
           <Timer className="h-5 w-5" />
           Cron
         </Link>
+        <div className="w-px my-2 bg-muted-foreground/30" />
         <Link
           href="/bbang"
           className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
