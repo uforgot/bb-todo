@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useUsage, type ClaudeSummary, type KimiSummary, type UsageLog } from "@/hooks/use-usage";
+import { useUsage, type ClaudeSummary, type KimiSummary } from "@/hooks/use-usage";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
@@ -46,16 +46,6 @@ function formatRelativeTime(dateStr: string): string {
   if (hours < 24) return `${hours}시간 전`;
   const days = Math.floor(hours / 24);
   return `${days}일 전`;
-}
-
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr);
-  return date.toLocaleString("ko-KR", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function ProgressBar({ percentage, color = "bg-blue-500" }: { percentage: number; color?: string }) {
@@ -166,13 +156,7 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
   );
 }
 
-function KimiCard({ summary, logs }: { summary: KimiSummary; logs: UsageLog[] }) {
-  const kimiLogs = logs
-    .filter((l) => l.provider === "kimi" && l.event_type === "daily")
-    .slice(-30);
-
-  const maxConsumed = Math.max(...kimiLogs.map((l) => l.consumed ?? 0), 0.01);
-
+function KimiCard({ summary }: { summary: KimiSummary }) {
   return (
     <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-4">
       {/* Header */}
@@ -181,37 +165,10 @@ function KimiCard({ summary, logs }: { summary: KimiSummary; logs: UsageLog[] })
         <Badge variant="secondary" className="text-xs font-mono">${summary.current_balance.toFixed(2)}</Badge>
       </div>
 
-      {/* Monthly total */}
+      {/* Balance */}
       <div className="space-y-1">
-        <p className="text-sm font-medium">월간 사용량</p>
-        <p className="text-lg font-mono">${summary.monthly_consumed.toFixed(2)}</p>
-      </div>
-
-      {/* Daily consumption bars (last 30 days) */}
-      {kimiLogs.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">일별 소비 (최근 {kimiLogs.length}일)</p>
-          <div className="flex items-end gap-px h-16">
-            {kimiLogs.map((log, i) => {
-              const height = maxConsumed > 0 ? ((log.consumed ?? 0) / maxConsumed) * 100 : 0;
-              return (
-                <div
-                  key={i}
-                  className="flex-1 bg-emerald-500/70 rounded-t-sm min-h-[2px]"
-                  style={{ height: `${Math.max(height, 3)}%` }}
-                  title={`${formatDate(log.recorded_at)}: $${(log.consumed ?? 0).toFixed(4)}`}
-                />
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Last charge */}
-      <div className="pt-1 border-t border-border/30">
-        <p className="text-xs text-muted-foreground">
-          마지막 충전: {formatDate(summary.last_charge)}
-        </p>
+        <p className="text-sm font-medium">잔액</p>
+        <p className="text-2xl font-mono">${summary.current_balance.toFixed(2)}</p>
       </div>
     </div>
   );
@@ -252,7 +209,7 @@ export function UsageSection() {
       {!isLoading && !isError && summary && (
         <div className="space-y-2">
           {summary.claude && <ClaudeCard summary={summary.claude} onRefresh={handleRefresh} isRefreshing={isRefreshing} />}
-          {summary.kimi && <KimiCard summary={summary.kimi} logs={logs} />}
+          {summary.kimi && <KimiCard summary={summary.kimi} />}
         </div>
       )}
     </div>
