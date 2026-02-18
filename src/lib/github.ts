@@ -36,3 +36,31 @@ export async function fetchTodoMd(): Promise<{ content: string; sha: string }> {
 
   return { content, sha: data.sha };
 }
+
+export async function fetchCronJobs(): Promise<string> {
+  const owner = process.env.GITHUB_OWNER;
+  const repo = process.env.GITHUB_REPO;
+  const branch = process.env.GITHUB_BRANCH || "main";
+  const token = process.env.GITHUB_TOKEN;
+
+  if (!owner || !repo || !token) {
+    throw new Error("Missing GitHub environment variables");
+  }
+
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/backup/cron-jobs.json?ref=${branch}`;
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github.v3+json",
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  }
+
+  const data: GitHubFileResponse = await res.json();
+  return Buffer.from(data.content, "base64").toString("utf-8");
+}

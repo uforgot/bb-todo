@@ -5,6 +5,7 @@ import { countItems } from "@/lib/parser";
 import { TodoHeader } from "@/components/todo-header";
 import { TodoSection } from "@/components/todo-section";
 import { TodoSkeleton } from "@/components/todo-skeleton";
+import { CronSection } from "@/components/cron-section";
 import { AlertCircle } from "lucide-react";
 
 export default function Home() {
@@ -47,6 +48,8 @@ export default function Home() {
           </p>
         )}
       </main>
+      <hr className="max-w-2xl mx-auto border-border/30 my-2" />
+      <CronSection />
     </>
   );
 }
