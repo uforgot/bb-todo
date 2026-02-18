@@ -8,8 +8,13 @@ import { useState } from "react";
 const FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md"] as const;
 
 function formatDate(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00");
+  const d = new Date(dateStr);
   return d.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric", weekday: "short" });
+}
+
+function formatTime(dateStr: string): string {
+  const d = new Date(dateStr);
+  return d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function DiffLine({ line, type }: { line: string; type: "add" | "del" }) {
@@ -74,7 +79,7 @@ function FileSection({ repo, file }: { repo: string; file: string }) {
                 )}
               </div>
               <span className="text-[10px] text-muted-foreground ml-2">
-                {v.sha.slice(0, 7)}
+                {formatTime(v.date)} · {v.sha.slice(0, 7)}
               </span>
             </button>
             {isOpen && (

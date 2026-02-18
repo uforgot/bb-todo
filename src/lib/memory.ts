@@ -60,7 +60,7 @@ export async function fetchMemoryHistory(
     const date = c.commit.committer.date.slice(0, 10);
     if (!seen.has(date)) {
       seen.add(date);
-      uniqueCommits.push({ sha: c.sha, date, message: c.commit.message });
+      uniqueCommits.push({ sha: c.sha, date: c.commit.committer.date, message: c.commit.message });
     }
   }
 
