@@ -7,9 +7,10 @@ import { CheckCircle, ListTodo, Moon, Sun } from "lucide-react";
 interface TodoHeaderProps {
   total: number;
   completed: number;
+  countLabel?: string; // custom badge text (e.g. for cron page)
 }
 
-export function TodoHeader({ total, completed }: TodoHeaderProps) {
+export function TodoHeader({ total, completed, countLabel }: TodoHeaderProps) {
   const { resolvedTheme, setTheme } = useTheme();
   const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
 
@@ -21,9 +22,9 @@ export function TodoHeader({ total, completed }: TodoHeaderProps) {
           <h1 className="text-lg font-semibold">bb-todo</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant={percentage === 100 ? "default" : "secondary"}>
+          <Badge variant={countLabel ? "secondary" : percentage === 100 ? "default" : "secondary"}>
             <CheckCircle className="h-3 w-3 mr-1" />
-            {completed}/{total} ({percentage}%)
+            {countLabel ?? `${completed}/${total} (${percentage}%)`}
           </Badge>
           <button
             onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}

@@ -62,10 +62,6 @@ export function CronSection() {
 
   return (
     <div className="max-w-2xl mx-auto py-2 px-2">
-      <div className="flex items-center justify-between mb-2 px-1">
-        <h2 className="text-sm font-semibold text-muted-foreground">크론잡</h2>
-        <span className="text-xs text-muted-foreground">{jobs.length}개</span>
-      </div>
 
       {isLoading && (
         <div className="space-y-2">
