@@ -33,13 +33,18 @@ export default function ArchivePage() {
     );
   }
 
+  // level 1 래퍼 건너뛰고 children 바로 렌더링
+  const flatSections = sections.length === 1 && sections[0].children.length > 0
+    ? sections[0].children
+    : sections;
+
   return (
     <>
       <TodoHeader total={total} completed={completed} />
       <PullToRefresh onRefresh={refresh}>
         <main className="max-w-2xl mx-auto py-2 px-2">
           <div className="space-y-0">
-            {sections.map((section, idx) => (
+            {flatSections.map((section, idx) => (
               <ArchiveSection
                 key={idx}
                 section={section}
@@ -47,7 +52,7 @@ export default function ArchivePage() {
               />
             ))}
           </div>
-          {sections.length === 0 && (
+          {flatSections.length === 0 && (
             <p className="text-center text-muted-foreground py-8 text-sm">
               아카이브 항목이 없습니다
             </p>
