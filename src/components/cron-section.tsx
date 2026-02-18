@@ -26,13 +26,20 @@ function CronJobCard({ job }: { job: CronJob }) {
   const hasError = (job.state?.consecutiveErrors ?? 0) > 0;
 
   return (
-    <div className="flex items-center justify-between py-2 px-3 rounded-lg border border-border/50 bg-card/30">
+    <div className={`flex items-center justify-between py-2 px-3 rounded-lg border bg-card/30 ${
+      hasError ? "border-destructive/60 bg-destructive/5" : "border-border/50"
+    }`}>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium truncate">{job.name}</span>
           {!job.enabled && (
             <Badge variant="secondary" className="text-xs shrink-0">
               비활성
+            </Badge>
+          )}
+          {hasError && (
+            <Badge variant="destructive" className="text-xs shrink-0">
+              오류 {(job.state?.consecutiveErrors ?? 0) > 1 ? `×${job.state?.consecutiveErrors}` : ""}
             </Badge>
           )}
         </div>
