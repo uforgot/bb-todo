@@ -21,6 +21,26 @@ function formatDuration(ms?: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+const DAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
+
+function cronToKorean(expr?: string): string {
+  if (!expr) return "";
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length < 5) return expr;
+
+  const [min, hour, day, month, dow] = parts;
+  const time = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
+
+  // 요일 지정
+  if (dow !== "*") {
+    const days = dow.split(",").map((d) => DAY_NAMES[Number(d)] ?? d).join("·");
+    return `매주 ${days} ${time}`;
+  }
+  // 매일
+  if (day === "*" && month === "*") return `매일 ${time}`;
+  return expr;
+}
+
 function CronJobCard({ job }: { job: CronJob }) {
   const isOk = job.state?.lastStatus === "ok";
   const hasError = (job.state?.consecutiveErrors ?? 0) > 0;
@@ -44,7 +64,7 @@ function CronJobCard({ job }: { job: CronJob }) {
           )}
         </div>
         <p className="text-xs text-muted-foreground mt-0.5">
-          {job.schedule.expr ?? job.schedule.kind}
+          {cronToKorean(job.schedule.expr) || job.schedule.kind}
           {job.state?.lastRunAtMs && (
             <span className="ml-2">
               · {formatDuration(job.state.lastDurationMs)}
