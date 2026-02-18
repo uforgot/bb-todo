@@ -31,6 +31,7 @@ export async function GET() {
             }
           : null,
       },
+      timestamp: live.timestamp ?? new Date().toISOString(),
     });
   } catch (error) {
     const message =

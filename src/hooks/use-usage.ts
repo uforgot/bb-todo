@@ -39,6 +39,7 @@ interface UsageApiResponse {
     kimi: KimiSummary;
     claude: ClaudeSummary;
   };
+  timestamp?: string;
 }
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
@@ -56,6 +57,7 @@ export function useUsage() {
   return {
     logs: data?.logs ?? [],
     summary: data?.summary ?? null,
+    timestamp: data?.timestamp ?? null,
     isLoading,
     isError: !!error,
     refresh: () => mutate(),

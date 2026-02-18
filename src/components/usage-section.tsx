@@ -156,7 +156,7 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
   );
 }
 
-function KimiCard({ summary }: { summary: KimiSummary }) {
+function KimiCard({ summary, timestamp, onRefresh, isRefreshing }: { summary: KimiSummary; timestamp?: string | null; onRefresh?: () => void; isRefreshing?: boolean }) {
   return (
     <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-4">
       {/* Header */}
@@ -170,12 +170,28 @@ function KimiCard({ summary }: { summary: KimiSummary }) {
         <p className="text-sm font-medium">잔액</p>
         <p className="text-2xl font-mono">${summary.current_balance.toFixed(2)}</p>
       </div>
+
+      {/* Last updated */}
+      <div className="pt-1 border-t border-border/30 flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          마지막 업데이트: {timestamp ? formatRelativeTime(timestamp) : "-"}
+        </p>
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            disabled={isRefreshing}
+            className="text-muted-foreground hover:text-foreground transition-colors p-1"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
 export function UsageSection() {
-  const { logs, summary, isLoading, isError, refresh } = useUsage();
+  const { logs, summary, timestamp, isLoading, isError, refresh } = useUsage();
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleRefresh = async () => {
@@ -209,7 +225,7 @@ export function UsageSection() {
       {!isLoading && !isError && summary && (
         <div className="space-y-2">
           {summary.claude && <ClaudeCard summary={summary.claude} onRefresh={handleRefresh} isRefreshing={isRefreshing} />}
-          {summary.kimi && <KimiCard summary={summary.kimi} />}
+          {summary.kimi && <KimiCard summary={summary.kimi} timestamp={timestamp} onRefresh={handleRefresh} isRefreshing={isRefreshing} />}
         </div>
       )}
     </div>
