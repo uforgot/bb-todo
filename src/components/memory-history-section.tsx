@@ -2,9 +2,10 @@
 
 import { useMemoryHistory } from "@/hooks/use-memory-history";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ExternalLink } from "lucide-react";
 import { useState } from "react";
 
-const FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md"] as const;
+const FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md", "USER.md"] as const;
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
@@ -98,11 +99,27 @@ function FileSection({ repo, file }: { repo: string; file: string }) {
   );
 }
 
+const GITHUB_BASE = "https://github.com/uforgot";
+
 export function MemoryHistorySection({ repo }: { repo: string }) {
   const [activeFile, setActiveFile] = useState<string>("MEMORY.md");
+  const githubUrl = `${GITHUB_BASE}/${repo}/blob/main/${activeFile}`;
 
   return (
     <div className="max-w-2xl mx-auto py-2 px-2">
+      {/* GitHub link */}
+      <div className="flex justify-end mb-2">
+        <a
+          href={githubUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ExternalLink className="h-3 w-3" />
+          GitHub 원본
+        </a>
+      </div>
+
       {/* File tabs */}
       <div className="flex gap-1 mb-3">
         {FILES.map((file) => (
