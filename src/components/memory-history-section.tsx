@@ -5,7 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ExternalLink } from "lucide-react";
 import { useState } from "react";
 
-const FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md", "USER.md"] as const;
+const FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md"] as const;
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
