@@ -107,6 +107,33 @@ export class ConflictError extends Error {
   }
 }
 
+export async function fetchLastSyncTime(): Promise<string> {
+  const owner = process.env.GITHUB_OWNER;
+  const repo = process.env.GITHUB_REPO;
+  const token = process.env.GITHUB_TOKEN;
+
+  if (!owner || !repo || !token) {
+    throw new Error("Missing GitHub environment variables");
+  }
+
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/commits?per_page=1`;
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github.v3+json",
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  return data[0]?.commit?.committer?.date ?? null;
+}
+
 export async function fetchCronJobs(): Promise<string> {
   const { owner, repo, branch, token } = getConfig();
 
