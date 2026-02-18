@@ -2,18 +2,10 @@
 
 import useSWR from "swr";
 
-export interface UsageLog {
-  provider: string;
-  balance?: number;
-  consumed?: number;
-  hours_elapsed?: number;
-  event_type: string;
-  charge_amount?: number | null;
-  recorded_at: string;
-}
-
 export interface KimiSummary {
   current_balance: number;
+  cash_balance?: number;
+  voucher_balance?: number;
   monthly_consumed: number;
   last_charge: string;
   currency: string;
@@ -34,30 +26,33 @@ export interface ClaudeSummary {
   last_updated: string;
 }
 
-interface UsageApiResponse {
-  logs: UsageLog[];
-  summary: {
-    kimi: KimiSummary;
-    claude: ClaudeSummary;
-  };
-  timestamp?: string;
-}
-
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-export function useUsage() {
-  const { data, error, isLoading, mutate } = useSWR<UsageApiResponse>(
-    "/api/usage",
+export function useClaudeUsage() {
+  const { data, error, isLoading, mutate } = useSWR<{ claude: ClaudeSummary; timestamp: string }>(
+    "/api/usage/claude",
     fetcher,
-    {
-      revalidateOnFocus: false,
-      dedupingInterval: 60000,
-    }
+    { revalidateOnFocus: false, dedupingInterval: 60000 }
   );
 
   return {
-    logs: data?.logs ?? [],
-    summary: data?.summary ?? null,
+    claude: data?.claude ?? null,
+    timestamp: data?.timestamp ?? null,
+    isLoading,
+    isError: !!error,
+    refresh: () => mutate(),
+  };
+}
+
+export function useKimiUsage() {
+  const { data, error, isLoading, mutate } = useSWR<{ kimi: KimiSummary; timestamp: string }>(
+    "/api/usage/kimi",
+    fetcher,
+    { revalidateOnFocus: false, dedupingInterval: 60000 }
+  );
+
+  return {
+    kimi: data?.kimi ?? null,
     timestamp: data?.timestamp ?? null,
     isLoading,
     isError: !!error,

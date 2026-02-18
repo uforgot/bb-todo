@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useUsage, type ClaudeSummary, type KimiSummary } from "@/hooks/use-usage";
+import { useClaudeUsage, useKimiUsage, type ClaudeSummary, type KimiSummary } from "@/hooks/use-usage";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
@@ -59,7 +59,19 @@ function ProgressBar({ percentage, color = "bg-blue-500" }: { percentage: number
   );
 }
 
-function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSummary; onRefresh?: () => void; isRefreshing?: boolean }) {
+function RefreshButton({ onClick, isRefreshing }: { onClick: () => void; isRefreshing: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={isRefreshing}
+      className="text-muted-foreground hover:text-foreground transition-colors p-1"
+    >
+      <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+    </button>
+  );
+}
+
+function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSummary; onRefresh: () => void; isRefreshing: boolean }) {
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 60000);
@@ -74,35 +86,27 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
 
   return (
     <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-5">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <span className="text-base font-semibold">Claude</span>
         <Badge variant="secondary" className="text-xs">{summary.plan} Plan</Badge>
       </div>
 
-      {/* 현재 세션 */}
       <div className="space-y-2">
         <p className="text-sm font-medium">현재 세션</p>
         <p className="text-xs text-muted-foreground">{formatCountdown(summary.session_reset_time)}</p>
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <ProgressBar
-              percentage={summary.session_percentage}
-              color="bg-blue-500"
-            />
+            <ProgressBar percentage={summary.session_percentage} color="bg-blue-500" />
           </div>
           <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.session_percentage}% 사용됨</span>
         </div>
       </div>
 
-      {/* Divider */}
       <div className="border-t border-border/30" />
 
-      {/* 주간 한도 */}
       <div className="space-y-4">
         <p className="text-sm font-medium">주간 한도</p>
 
-        {/* 모든 모델 */}
         <div className="space-y-1.5">
           <p className="text-xs font-medium">모든 모델</p>
           <p className="text-xs text-muted-foreground">{formatResetTime(summary.weekly_reset_time)}</p>
@@ -115,7 +119,6 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
           <p className="text-xs text-muted-foreground font-mono">{formatNumber(summary.weekly_tokens_used)} / {formatNumber(summary.weekly_limit)}</p>
         </div>
 
-        {/* Sonnet만 */}
         <div className="space-y-1.5">
           <p className="text-xs font-medium">Sonnet만</p>
           <p className="text-xs text-muted-foreground">{formatResetTime(summary.weekly_reset_time)}</p>
@@ -128,7 +131,6 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
           <p className="text-xs text-muted-foreground font-mono">{formatNumber(summary.sonnet_weekly_tokens_used)}</p>
         </div>
 
-        {/* Opus (only show if used) */}
         {summary.opus_weekly_tokens_used > 0 && (
           <div className="space-y-1.5">
             <p className="text-xs font-medium">Opus</p>
@@ -143,68 +145,61 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
         )}
       </div>
 
-      {/* Last updated */}
       <div className="pt-1 border-t border-border/30 flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
           마지막 업데이트: {formatRelativeTime(summary.last_updated)}
         </p>
-        {onRefresh && (
-          <button
-            onClick={onRefresh}
-            disabled={isRefreshing}
-            className="text-muted-foreground hover:text-foreground transition-colors p-1"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-          </button>
-        )}
+        <RefreshButton onClick={onRefresh} isRefreshing={isRefreshing} />
       </div>
     </div>
   );
 }
 
-function KimiCard({ summary, timestamp, onRefresh, isRefreshing }: { summary: KimiSummary; timestamp?: string | null; onRefresh?: () => void; isRefreshing?: boolean }) {
+function KimiCard({ summary, timestamp, onRefresh, isRefreshing }: { summary: KimiSummary; timestamp: string | null; onRefresh: () => void; isRefreshing: boolean }) {
   return (
     <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-4">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <span className="text-base font-semibold">Kimi</span>
         <Badge variant="secondary" className="text-xs font-mono">${summary.current_balance.toFixed(2)}</Badge>
       </div>
 
-      {/* Balance */}
       <div className="space-y-1">
         <p className="text-sm font-medium">잔액</p>
         <p className="text-2xl font-mono">${summary.current_balance.toFixed(2)}</p>
       </div>
 
-      {/* Last updated */}
       <div className="pt-1 border-t border-border/30 flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
           마지막 업데이트: {timestamp ? formatRelativeTime(timestamp) : "-"}
         </p>
-        {onRefresh && (
-          <button
-            onClick={onRefresh}
-            disabled={isRefreshing}
-            className="text-muted-foreground hover:text-foreground transition-colors p-1"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-          </button>
-        )}
+        <RefreshButton onClick={onRefresh} isRefreshing={isRefreshing} />
       </div>
     </div>
   );
 }
 
 export function UsageSection() {
-  const { logs, summary, timestamp, isLoading, isError, refresh } = useUsage();
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const { claude, timestamp: claudeTs, isLoading: claudeLoading, isError: claudeError, refresh: refreshClaude } = useClaudeUsage();
+  const { kimi, timestamp: kimiTs, isLoading: kimiLoading, isError: kimiError, refresh: refreshKimi } = useKimiUsage();
 
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    await refresh();
-    setTimeout(() => setIsRefreshing(false), 500);
+  const [claudeRefreshing, setClaudeRefreshing] = useState(false);
+  const [kimiRefreshing, setKimiRefreshing] = useState(false);
+
+  const handleClaudeRefresh = async () => {
+    setClaudeRefreshing(true);
+    await refreshClaude();
+    setTimeout(() => setClaudeRefreshing(false), 500);
   };
+
+  const handleKimiRefresh = async () => {
+    setKimiRefreshing(true);
+    await refreshKimi();
+    setTimeout(() => setKimiRefreshing(false), 500);
+  };
+
+  const isLoading = claudeLoading || kimiLoading;
+  const bothError = claudeError && kimiError;
+  const hasData = claude || kimi;
 
   return (
     <div className="max-w-2xl mx-auto py-2 px-2">
@@ -216,22 +211,22 @@ export function UsageSection() {
         </div>
       )}
 
-      {isError && (
+      {!isLoading && bothError && (
         <p className="text-xs text-muted-foreground text-center py-4">
           Usage 데이터를 불러올 수 없습니다
         </p>
       )}
 
-      {!isLoading && !isError && !summary && (
+      {!isLoading && !bothError && !hasData && (
         <p className="text-xs text-muted-foreground text-center py-8">
-          Usage 데이터가 아직 없습니다. 크론이 데이터를 수집하면 여기에 표시됩니다.
+          Usage 데이터가 아직 없습니다.
         </p>
       )}
 
-      {!isLoading && !isError && summary && (
+      {!isLoading && (
         <div className="space-y-2">
-          {summary.claude && <ClaudeCard summary={summary.claude} onRefresh={handleRefresh} isRefreshing={isRefreshing} />}
-          {summary.kimi && <KimiCard summary={summary.kimi} timestamp={timestamp} onRefresh={handleRefresh} isRefreshing={isRefreshing} />}
+          {claude && <ClaudeCard summary={claude} onRefresh={handleClaudeRefresh} isRefreshing={claudeRefreshing} />}
+          {kimi && <KimiCard summary={kimi} timestamp={kimiTs} onRefresh={handleKimiRefresh} isRefreshing={kimiRefreshing} />}
         </div>
       )}
     </div>
