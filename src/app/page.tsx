@@ -9,7 +9,6 @@ import { TodoSkeleton } from "@/components/todo-skeleton";
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { useToast } from "@/components/ui/toast";
 import { useNotifications } from "@/hooks/use-notifications";
-import { CronSection } from "@/components/cron-section";
 import { AlertCircle } from "lucide-react";
 
 export default function Home() {
@@ -67,8 +66,6 @@ export default function Home() {
           )}
         </main>
       </PullToRefresh>
-      <hr className="max-w-2xl mx-auto border-border/30 my-2" />
-      <CronSection />
     </>
   );
 }

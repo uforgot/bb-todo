@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ListTodo, Archive } from "lucide-react";
+import { ListTodo, Archive, Timer } from "lucide-react";
 
 export function BottomTabBar() {
   const pathname = usePathname();
@@ -27,6 +27,15 @@ export function BottomTabBar() {
         >
           <Archive className="h-5 w-5" />
           Archive
+        </Link>
+        <Link
+          href="/cron"
+          className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+            pathname === "/cron" ? "text-foreground font-medium" : "text-muted-foreground"
+          }`}
+        >
+          <Timer className="h-5 w-5" />
+          Cron
         </Link>
       </div>
     </nav>
