@@ -49,6 +49,10 @@ function getClaudeUsage() {
       appleEpoch.getTime() + (cu.lastUpdated || 0) * 1000
     );
 
+    const sessionResetTime = new Date(
+      appleEpoch.getTime() + (cu.sessionResetTime || 0) * 1000
+    );
+
     return {
       plan: "Max",
       weekly_tokens_used: cu.weeklyTokensUsed || 0,
@@ -59,6 +63,7 @@ function getClaudeUsage() {
       opus_weekly_tokens_used: cu.opusWeeklyTokensUsed || 0,
       opus_weekly_percentage: cu.opusWeeklyPercentage || 0,
       session_percentage: cu.sessionPercentage || 0,
+      session_reset_time: sessionResetTime.toISOString(),
       weekly_reset_time: resetTime.toISOString(),
       last_updated: lastUpdated.toISOString(),
     };

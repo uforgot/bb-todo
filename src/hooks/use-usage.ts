@@ -29,6 +29,7 @@ export interface ClaudeSummary {
   opus_weekly_tokens_used: number;
   opus_weekly_percentage: number;
   session_percentage: number;
+  session_reset_time: string;
   weekly_reset_time: string;
   last_updated: string;
 }

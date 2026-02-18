@@ -83,7 +83,7 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
       {/* 현재 세션 */}
       <div className="space-y-2">
         <p className="text-sm font-medium">현재 세션</p>
-        <p className="text-xs text-muted-foreground">{formatCountdown(summary.weekly_reset_time)}</p>
+        <p className="text-xs text-muted-foreground">{formatCountdown(summary.session_reset_time)}</p>
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <ProgressBar
