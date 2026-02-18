@@ -11,6 +11,10 @@ export interface CronJob {
     expr?: string;
     tz?: string;
   };
+  payload?: {
+    kind: string;
+    message?: string;
+  };
   state?: {
     nextRunAtMs?: number;
     lastRunAtMs?: number;
