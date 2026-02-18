@@ -43,7 +43,7 @@ export default function ArchivePage() {
               <ArchiveSection
                 key={idx}
                 section={section}
-                defaultOpen={idx < 3}
+                defaultOpen={false}
               />
             ))}
           </div>

@@ -20,10 +20,10 @@ export function ArchiveSection({ section, defaultOpen = false }: ArchiveSectionP
   const completed = section.items.filter((i) => i.checked).length;
 
   return (
-    <Card className="border-b rounded-none border-x-0 shadow-none last:border-b-0">
+    <Card className="border border-border/50 shadow-none rounded-lg mb-1.5">
       <Accordion type="single" collapsible defaultValue={defaultOpen ? "section" : undefined}>
-        <AccordionItem value="section" className="border-b-0">
-          <AccordionTrigger className="px-4 py-2.5 hover:no-underline">
+        <AccordionItem value="section" className="border-0">
+          <AccordionTrigger className="px-4 py-3 hover:no-underline hover:bg-accent/30 rounded-lg transition-colors">
             <div className="flex items-center gap-2">
               <span className="font-medium text-sm">{section.title}</span>
               {total > 0 && (

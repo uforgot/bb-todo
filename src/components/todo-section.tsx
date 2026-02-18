@@ -22,14 +22,14 @@ export function TodoSection({ section, defaultOpen = true, onToggle }: TodoSecti
   const allDone = total > 0 && completed === total;
 
   return (
-    <Card className="border-0 shadow-none rounded-none">
+    <Card className="border border-border/50 shadow-none rounded-lg mb-1.5">
       <Accordion
         type="single"
         collapsible
         defaultValue={defaultOpen ? section.title : undefined}
       >
-        <AccordionItem value={section.title} className="border-b">
-          <AccordionTrigger className="px-4 py-2 hover:no-underline">
+        <AccordionItem value={section.title} className="border-0">
+          <AccordionTrigger className="px-4 py-3 hover:no-underline hover:bg-accent/30 rounded-lg transition-colors">
             <div className="flex items-center gap-2">
               <span
                 className={`font-medium ${
