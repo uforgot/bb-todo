@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ListTodo, Archive, Timer, Brain, Sparkles } from "lucide-react";
+import { ListTodo, Archive, Timer, Activity, Brain, Sparkles } from "lucide-react";
 
 export function BottomTabBar() {
   const pathname = usePathname();
@@ -36,6 +36,15 @@ export function BottomTabBar() {
         >
           <Timer className="h-5 w-5" />
           Cron
+        </Link>
+        <Link
+          href="/usage"
+          className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+            pathname === "/usage" ? "text-foreground font-medium" : "text-muted-foreground"
+          }`}
+        >
+          <Activity className="h-5 w-5" />
+          Usage
         </Link>
         <div className="w-px my-2 bg-muted-foreground/30" />
         <Link

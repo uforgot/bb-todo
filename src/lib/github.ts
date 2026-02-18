@@ -154,3 +154,24 @@ export async function fetchCronJobs(): Promise<string> {
   const data: GitHubFileResponse = await res.json();
   return Buffer.from(data.content, "base64").toString("utf-8");
 }
+
+export async function fetchUsageLogs(): Promise<string> {
+  const { owner, repo, branch, token } = getConfig();
+
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/backup/usage-logs.json?ref=${branch}`;
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github.v3+json",
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  }
+
+  const data: GitHubFileResponse = await res.json();
+  return Buffer.from(data.content, "base64").toString("utf-8");
+}
