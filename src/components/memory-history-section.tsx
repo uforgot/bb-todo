@@ -73,12 +73,15 @@ function FileSection({ repo, file }: { repo: string; file: string }) {
                   </span>
                 )}
               </div>
-              <span className="text-[10px] text-muted-foreground truncate ml-2 max-w-[40%]">
-                {v.message.split("\n")[0]}
+              <span className="text-[10px] text-muted-foreground ml-2">
+                {v.sha.slice(0, 7)}
               </span>
             </button>
             {isOpen && (
               <div className="px-2 pb-2 border-t border-border/30 space-y-px mt-1 max-h-[60vh] overflow-y-auto">
+                <p className="text-[11px] text-muted-foreground px-2 py-1.5 mb-1 bg-muted/20 rounded">
+                  {v.message}
+                </p>
                 {v.additions.map((line, i) => (
                   <DiffLine key={`a-${i}`} line={line} type="add" />
                 ))}
