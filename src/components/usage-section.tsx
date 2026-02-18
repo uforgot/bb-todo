@@ -10,6 +10,16 @@ function formatNumber(n: number): string {
   return n.toString();
 }
 
+function formatResetTime(resetTime: string): string {
+  const reset = new Date(resetTime);
+  const days = ["일", "월", "화", "수", "목", "금", "토"];
+  const day = days[reset.getDay()];
+  const hours = reset.getHours();
+  const period = hours < 12 ? "오전" : "오후";
+  const h = hours <= 12 ? hours : hours - 12;
+  return `(${day}) ${period} ${h}:00에 재설정`;
+}
+
 function formatCountdown(resetTime: string): string {
   const now = new Date();
   const reset = new Date(resetTime);
@@ -17,8 +27,23 @@ function formatCountdown(resetTime: string): string {
   if (diff <= 0) return "리셋 완료";
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-  if (days > 0) return `${days}일 ${hours}시간 후 리셋`;
-  return `${hours}시간 후 리셋`;
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  if (days > 0) return `${days}일 ${hours}시간 후 재설정`;
+  if (hours > 0) return `${hours}시간 ${minutes}분 후 재설정`;
+  return `${minutes}분 후 재설정`;
+}
+
+function formatRelativeTime(dateStr: string): string {
+  const now = new Date();
+  const date = new Date(dateStr);
+  const diff = now.getTime() - date.getTime();
+  const minutes = Math.floor(diff / (1000 * 60));
+  if (minutes < 1) return "방금 전";
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  return `${days}일 전`;
 }
 
 function formatDate(dateStr: string): string {
@@ -31,11 +56,11 @@ function formatDate(dateStr: string): string {
   });
 }
 
-function ProgressBar({ percentage, color }: { percentage: number; color: string }) {
+function ProgressBar({ percentage, color = "bg-blue-500" }: { percentage: number; color?: string }) {
   return (
-    <div className="h-2 w-full rounded-full bg-muted">
+    <div className="h-2.5 w-full rounded-full bg-muted">
       <div
-        className={`h-2 rounded-full transition-all ${color}`}
+        className={`h-2.5 rounded-full transition-all ${color}`}
         style={{ width: `${Math.min(percentage, 100)}%` }}
       />
     </div>
@@ -43,55 +68,89 @@ function ProgressBar({ percentage, color }: { percentage: number; color: string 
 }
 
 function ClaudeCard({ summary }: { summary: ClaudeSummary }) {
+  const weeklyColor = summary.weekly_percentage >= 90
+    ? "bg-red-500"
+    : summary.weekly_percentage >= 70
+      ? "bg-yellow-500"
+      : "bg-blue-500";
+
   return (
-    <div className="rounded-lg border border-border/50 bg-card/30 p-3 space-y-3">
+    <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">Claude</span>
+        <span className="text-base font-semibold">Claude</span>
         <Badge variant="secondary" className="text-xs">{summary.plan} Plan</Badge>
       </div>
 
-      {/* Weekly usage */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-muted-foreground">주간 사용량</span>
-          <span className="font-mono">{formatNumber(summary.weekly_tokens_used)} / {formatNumber(summary.weekly_limit)}</span>
-        </div>
-        <ProgressBar
-          percentage={summary.weekly_percentage}
-          color={summary.weekly_percentage >= 90 ? "bg-destructive" : summary.weekly_percentage >= 70 ? "bg-yellow-500" : "bg-primary"}
-        />
-        <p className="text-xs text-muted-foreground text-right">{summary.weekly_percentage}%</p>
-      </div>
-
-      {/* Model breakdown */}
+      {/* 현재 세션 */}
       <div className="space-y-2">
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">Sonnet</span>
-            <span className="font-mono">{formatNumber(summary.sonnet_weekly_tokens_used)} ({summary.sonnet_weekly_percentage}%)</span>
+        <p className="text-sm font-medium">현재 세션</p>
+        <p className="text-xs text-muted-foreground">{formatCountdown(summary.weekly_reset_time)}</p>
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <ProgressBar
+              percentage={summary.session_percentage}
+              color="bg-blue-500"
+            />
           </div>
-          <ProgressBar percentage={summary.sonnet_weekly_percentage} color="bg-blue-500" />
-        </div>
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">Opus</span>
-            <span className="font-mono">{formatNumber(summary.opus_weekly_tokens_used)} ({summary.opus_weekly_percentage}%)</span>
-          </div>
-          <ProgressBar percentage={summary.opus_weekly_percentage} color="bg-purple-500" />
+          <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.session_percentage}% 사용됨</span>
         </div>
       </div>
 
-      {/* Session & Reset */}
-      <div className="flex items-center justify-between text-xs text-muted-foreground pt-1 border-t border-border/30">
-        <span>세션 {summary.session_percentage}%</span>
-        <span>{formatCountdown(summary.weekly_reset_time)}</span>
+      {/* Divider */}
+      <div className="border-t border-border/30" />
+
+      {/* 주간 한도 */}
+      <div className="space-y-4">
+        <p className="text-sm font-medium">주간 한도</p>
+
+        {/* 모든 모델 */}
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium">모든 모델</p>
+          <p className="text-xs text-muted-foreground">{formatResetTime(summary.weekly_reset_time)}</p>
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <ProgressBar percentage={summary.weekly_percentage} color={weeklyColor} />
+            </div>
+            <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.weekly_percentage}% 사용됨</span>
+          </div>
+          <p className="text-xs text-muted-foreground font-mono">{formatNumber(summary.weekly_tokens_used)} / {formatNumber(summary.weekly_limit)}</p>
+        </div>
+
+        {/* Sonnet만 */}
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium">Sonnet만</p>
+          <p className="text-xs text-muted-foreground">{formatResetTime(summary.weekly_reset_time)}</p>
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <ProgressBar percentage={summary.sonnet_weekly_percentage} color="bg-blue-500" />
+            </div>
+            <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.sonnet_weekly_percentage}% 사용됨</span>
+          </div>
+          <p className="text-xs text-muted-foreground font-mono">{formatNumber(summary.sonnet_weekly_tokens_used)}</p>
+        </div>
+
+        {/* Opus (only show if used) */}
+        {summary.opus_weekly_tokens_used > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium">Opus</p>
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                <ProgressBar percentage={summary.opus_weekly_percentage} color="bg-purple-500" />
+              </div>
+              <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.opus_weekly_percentage}% 사용됨</span>
+            </div>
+            <p className="text-xs text-muted-foreground font-mono">{formatNumber(summary.opus_weekly_tokens_used)}</p>
+          </div>
+        )}
       </div>
 
       {/* Last updated */}
-      <p className="text-[10px] text-muted-foreground text-right">
-        업데이트: {formatDate(summary.last_updated)}
-      </p>
+      <div className="pt-1 border-t border-border/30">
+        <p className="text-xs text-muted-foreground">
+          마지막 업데이트: {formatRelativeTime(summary.last_updated)}
+        </p>
+      </div>
     </div>
   );
 }
@@ -99,37 +158,37 @@ function ClaudeCard({ summary }: { summary: ClaudeSummary }) {
 function KimiCard({ summary, logs }: { summary: KimiSummary; logs: UsageLog[] }) {
   const kimiLogs = logs
     .filter((l) => l.provider === "kimi" && l.event_type === "daily")
-    .slice(0, 30);
+    .slice(-30);
 
   const maxConsumed = Math.max(...kimiLogs.map((l) => l.consumed ?? 0), 0.01);
 
   return (
-    <div className="rounded-lg border border-border/50 bg-card/30 p-3 space-y-3">
+    <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">Kimi</span>
+        <span className="text-base font-semibold">Kimi</span>
         <Badge variant="secondary" className="text-xs font-mono">${summary.current_balance.toFixed(2)}</Badge>
       </div>
 
       {/* Monthly total */}
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">월간 사용량</span>
-        <span className="font-mono">${summary.monthly_consumed.toFixed(2)}</span>
+      <div className="space-y-1">
+        <p className="text-sm font-medium">월간 사용량</p>
+        <p className="text-lg font-mono">${summary.monthly_consumed.toFixed(2)}</p>
       </div>
 
       {/* Daily consumption bars (last 30 days) */}
       {kimiLogs.length > 0 && (
-        <div className="space-y-1">
+        <div className="space-y-2">
           <p className="text-xs text-muted-foreground">일별 소비 (최근 {kimiLogs.length}일)</p>
-          <div className="flex items-end gap-px h-12">
+          <div className="flex items-end gap-px h-16">
             {kimiLogs.map((log, i) => {
               const height = maxConsumed > 0 ? ((log.consumed ?? 0) / maxConsumed) * 100 : 0;
               return (
                 <div
                   key={i}
-                  className="flex-1 bg-emerald-500/70 rounded-t-sm min-h-[1px]"
-                  style={{ height: `${Math.max(height, 2)}%` }}
-                  title={`${formatDate(log.recorded_at)}: $${(log.consumed ?? 0).toFixed(2)}`}
+                  className="flex-1 bg-emerald-500/70 rounded-t-sm min-h-[2px]"
+                  style={{ height: `${Math.max(height, 3)}%` }}
+                  title={`${formatDate(log.recorded_at)}: $${(log.consumed ?? 0).toFixed(4)}`}
                 />
               );
             })}
@@ -138,9 +197,11 @@ function KimiCard({ summary, logs }: { summary: KimiSummary; logs: UsageLog[] })
       )}
 
       {/* Last charge */}
-      <p className="text-[10px] text-muted-foreground text-right">
-        마지막 충전: {formatDate(summary.last_charge)}
-      </p>
+      <div className="pt-1 border-t border-border/30">
+        <p className="text-xs text-muted-foreground">
+          마지막 충전: {formatDate(summary.last_charge)}
+        </p>
+      </div>
     </div>
   );
 }
@@ -153,7 +214,7 @@ export function UsageSection() {
       {isLoading && (
         <div className="space-y-2">
           {[1, 2].map((i) => (
-            <Skeleton key={i} className="h-40 w-full rounded-lg" />
+            <Skeleton key={i} className="h-48 w-full rounded-lg" />
           ))}
         </div>
       )}
@@ -166,14 +227,14 @@ export function UsageSection() {
 
       {!isLoading && !isError && !summary && (
         <p className="text-xs text-muted-foreground text-center py-8">
-          Usage 데이터가 아직 없습니다
+          Usage 데이터가 아직 없습니다. 크론이 데이터를 수집하면 여기에 표시됩니다.
         </p>
       )}
 
       {!isLoading && !isError && summary && (
         <div className="space-y-2">
-          <ClaudeCard summary={summary.claude} />
-          <KimiCard summary={summary.kimi} logs={logs} />
+          {summary.claude && <ClaudeCard summary={summary.claude} />}
+          {summary.kimi && <KimiCard summary={summary.kimi} logs={logs} />}
         </div>
       )}
     </div>
