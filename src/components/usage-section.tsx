@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useUsage, type ClaudeSummary, type KimiSummary } from "@/hooks/use-usage";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -60,6 +60,12 @@ function ProgressBar({ percentage, color = "bg-blue-500" }: { percentage: number
 }
 
 function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSummary; onRefresh?: () => void; isRefreshing?: boolean }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
+
   const weeklyColor = summary.weekly_percentage >= 90
     ? "bg-red-500"
     : summary.weekly_percentage >= 70
