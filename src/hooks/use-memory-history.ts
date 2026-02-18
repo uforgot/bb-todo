@@ -1,11 +1,5 @@
 import useSWR from "swr";
-
-interface MemoryVersion {
-  sha: string;
-  date: string;
-  message: string;
-  content: string;
-}
+import type { MemoryVersion } from "@/lib/memory";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 

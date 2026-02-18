@@ -1,16 +1,11 @@
 const GITHUB_API = "https://api.github.com";
 
-interface CommitEntry {
+export interface MemoryVersion {
   sha: string;
   date: string;
   message: string;
-}
-
-interface MemoryVersion {
-  sha: string;
-  date: string;
-  message: string;
-  content: string;
+  additions: string[];
+  deletions: string[];
 }
 
 function getToken() {
@@ -18,6 +13,17 @@ function getToken() {
   const owner = process.env.GITHUB_OWNER;
   if (!token || !owner) throw new Error("Missing GitHub environment variables");
   return { token, owner };
+}
+
+interface CommitFile {
+  filename: string;
+  patch?: string;
+}
+
+interface CommitDetail {
+  sha: string;
+  commit: { committer: { date: string }; message: string };
+  files?: CommitFile[];
 }
 
 export async function fetchMemoryHistory(
@@ -48,24 +54,22 @@ export async function fetchMemoryHistory(
   const commits: Array<{ sha: string; commit: { committer: { date: string }; message: string } }> = await commitsRes.json();
 
   // Deduplicate by date (keep latest commit per day)
-  const byDate = new Map<string, CommitEntry>();
+  const seen = new Set<string>();
+  const uniqueCommits: Array<{ sha: string; date: string; message: string }> = [];
   for (const c of commits) {
-    const date = c.commit.committer.date.slice(0, 10); // YYYY-MM-DD
-    if (!byDate.has(date)) {
-      byDate.set(date, {
-        sha: c.sha,
-        date,
-        message: c.commit.message,
-      });
+    const date = c.commit.committer.date.slice(0, 10);
+    if (!seen.has(date)) {
+      seen.add(date);
+      uniqueCommits.push({ sha: c.sha, date, message: c.commit.message });
     }
   }
 
-  // 2. Fetch file content at each date's commit SHA
+  // 2. Fetch each commit detail to get the patch
   const versions: MemoryVersion[] = [];
-  for (const [, entry] of byDate) {
+  for (const entry of uniqueCommits) {
     try {
-      const contentUrl = `${GITHUB_API}/repos/${owner}/${repo}/contents/${filePath}?ref=${entry.sha}`;
-      const contentRes = await fetch(contentUrl, {
+      const detailUrl = `${GITHUB_API}/repos/${owner}/${repo}/commits/${entry.sha}`;
+      const detailRes = await fetch(detailUrl, {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/vnd.github.v3+json",
@@ -73,23 +77,34 @@ export async function fetchMemoryHistory(
         cache: "no-store",
       });
 
-      if (!contentRes.ok) continue;
+      if (!detailRes.ok) continue;
 
-      const data = await contentRes.json();
-      const content = Buffer.from(data.content, "base64").toString("utf-8");
+      const detail: CommitDetail = await detailRes.json();
+      const file = detail.files?.find((f) => f.filename === filePath);
+      if (!file?.patch) continue;
+
+      const lines = file.patch.split("\n");
+      const additions = lines
+        .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
+        .map((l) => l.slice(1));
+      const deletions = lines
+        .filter((l) => l.startsWith("-") && !l.startsWith("---"))
+        .map((l) => l.slice(1));
+
+      if (additions.length === 0 && deletions.length === 0) continue;
 
       versions.push({
         sha: entry.sha,
         date: entry.date,
         message: entry.message,
-        content,
+        additions,
+        deletions,
       });
     } catch {
       continue;
     }
   }
 
-  // Sort by date descending
   versions.sort((a, b) => b.date.localeCompare(a.date));
   return versions;
 }

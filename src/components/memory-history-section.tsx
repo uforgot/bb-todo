@@ -8,26 +8,45 @@ const FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md"] as const;
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
-  return d.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" });
+  return d.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric", weekday: "short" });
+}
+
+function DiffLine({ line, type }: { line: string; type: "add" | "del" }) {
+  const isHeader = line.startsWith("#");
+  const isBold = line.startsWith("**") || line.startsWith("- **");
+
+  return (
+    <div
+      className={`px-2 py-0.5 text-xs leading-relaxed rounded-sm ${
+        type === "add"
+          ? "bg-emerald-500/10 text-emerald-300 border-l-2 border-emerald-500/40"
+          : "bg-red-500/10 text-red-300/70 border-l-2 border-red-500/30 line-through"
+      } ${isHeader ? "font-semibold text-sm mt-1" : ""} ${isBold ? "font-medium" : ""}`}
+    >
+      <span className="opacity-50 mr-1 select-none">{type === "add" ? "+" : "−"}</span>
+      {line || "\u00A0"}
+    </div>
+  );
 }
 
 function FileSection({ repo, file }: { repo: string; file: string }) {
   const { versions, isLoading, isError } = useMemoryHistory(repo, file);
-  const [openDate, setOpenDate] = useState<string | null>(null);
+  const [openSha, setOpenSha] = useState<string | null>(null);
 
   if (isLoading) {
     return (
       <div className="space-y-2 mb-4">
-        <Skeleton className="h-10 w-full rounded-lg" />
-        <Skeleton className="h-10 w-full rounded-lg" />
+        {[1, 2].map((i) => (
+          <Skeleton key={i} className="h-12 w-full rounded-lg" />
+        ))}
       </div>
     );
   }
 
   if (isError || versions.length === 0) {
     return (
-      <p className="text-xs text-muted-foreground py-2 mb-4">
-        {isError ? "불러올 수 없습니다" : "최근 7일 변경 이력 없음"}
+      <p className="text-xs text-muted-foreground text-center py-4 mb-4">
+        {isError ? "불러올 수 없습니다" : "최근 7일 변경 없음"}
       </p>
     );
   }
@@ -35,25 +54,41 @@ function FileSection({ repo, file }: { repo: string; file: string }) {
   return (
     <div className="space-y-1.5 mb-4">
       {versions.map((v) => {
-        const isOpen = openDate === v.sha;
+        const isOpen = openSha === v.sha;
         return (
           <div key={v.sha} className="border border-border/50 rounded-lg overflow-hidden">
             <button
-              onClick={() => setOpenDate(isOpen ? null : v.sha)}
-              className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-muted/30 transition-colors"
+              onClick={() => setOpenSha(isOpen ? null : v.sha)}
+              className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-muted/30 transition-colors"
             >
-              <span className="text-sm font-medium">
-                {formatDate(v.date)}
-              </span>
-              <span className="text-xs text-muted-foreground truncate ml-2 max-w-[60%]">
-                {v.message}
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">{formatDate(v.date)}</span>
+                <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                  +{v.additions.length}
+                </span>
+                {v.deletions.length > 0 && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400">
+                    −{v.deletions.length}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] text-muted-foreground truncate ml-2 max-w-[40%]">
+                {v.message.split("\n")[0]}
               </span>
             </button>
             {isOpen && (
-              <div className="px-3 pb-3 border-t border-border/30">
-                <pre className="text-xs text-muted-foreground whitespace-pre-wrap mt-2 max-h-[60vh] overflow-y-auto leading-relaxed">
-                  {v.content}
-                </pre>
+              <div className="px-2 pb-2 border-t border-border/30 space-y-px mt-1 max-h-[60vh] overflow-y-auto">
+                {v.additions.map((line, i) => (
+                  <DiffLine key={`a-${i}`} line={line} type="add" />
+                ))}
+                {v.deletions.length > 0 && (
+                  <>
+                    <div className="h-px bg-border/30 my-1" />
+                    {v.deletions.map((line, i) => (
+                      <DiffLine key={`d-${i}`} line={line} type="del" />
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </div>
