@@ -1,8 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import { useUsage, type ClaudeSummary, type KimiSummary, type UsageLog } from "@/hooks/use-usage";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RefreshCw } from "lucide-react";
 
 function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -67,7 +69,7 @@ function ProgressBar({ percentage, color = "bg-blue-500" }: { percentage: number
   );
 }
 
-function ClaudeCard({ summary }: { summary: ClaudeSummary }) {
+function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSummary; onRefresh?: () => void; isRefreshing?: boolean }) {
   const weeklyColor = summary.weekly_percentage >= 90
     ? "bg-red-500"
     : summary.weekly_percentage >= 70
@@ -146,10 +148,19 @@ function ClaudeCard({ summary }: { summary: ClaudeSummary }) {
       </div>
 
       {/* Last updated */}
-      <div className="pt-1 border-t border-border/30">
+      <div className="pt-1 border-t border-border/30 flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
           마지막 업데이트: {formatRelativeTime(summary.last_updated)}
         </p>
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            disabled={isRefreshing}
+            className="text-muted-foreground hover:text-foreground transition-colors p-1"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -207,7 +218,14 @@ function KimiCard({ summary, logs }: { summary: KimiSummary; logs: UsageLog[] })
 }
 
 export function UsageSection() {
-  const { logs, summary, isLoading, isError } = useUsage();
+  const { logs, summary, isLoading, isError, refresh } = useUsage();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await refresh();
+    setTimeout(() => setIsRefreshing(false), 500);
+  };
 
   return (
     <div className="max-w-2xl mx-auto py-2 px-2">
@@ -233,7 +251,7 @@ export function UsageSection() {
 
       {!isLoading && !isError && summary && (
         <div className="space-y-2">
-          {summary.claude && <ClaudeCard summary={summary.claude} />}
+          {summary.claude && <ClaudeCard summary={summary.claude} onRefresh={handleRefresh} isRefreshing={isRefreshing} />}
           {summary.kimi && <KimiCard summary={summary.kimi} logs={logs} />}
         </div>
       )}

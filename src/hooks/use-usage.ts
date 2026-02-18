@@ -44,12 +44,12 @@ interface UsageApiResponse {
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 export function useUsage() {
-  const { data, error, isLoading } = useSWR<UsageApiResponse>(
+  const { data, error, isLoading, mutate } = useSWR<UsageApiResponse>(
     "/api/usage",
     fetcher,
     {
       revalidateOnFocus: false,
-      dedupingInterval: 60000, // 1분 캐시
+      dedupingInterval: 60000,
     }
   );
 
@@ -58,5 +58,6 @@ export function useUsage() {
     summary: data?.summary ?? null,
     isLoading,
     isError: !!error,
+    refresh: () => mutate(),
   };
 }
