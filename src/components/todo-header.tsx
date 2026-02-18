@@ -22,7 +22,7 @@ export function TodoHeader({ total, completed, countLabel }: TodoHeaderProps) {
         <div className="flex items-center gap-2">
           <ListTodo className="h-5 w-5" />
           <div>
-            <h1 className="text-lg font-semibold leading-none">bb-todo</h1>
+            <h1 className="text-lg font-semibold leading-none">할일빵빵</h1>
             {syncLabel && (
               <p className="text-[10px] text-muted-foreground mt-0.5">{syncLabel}</p>
             )}

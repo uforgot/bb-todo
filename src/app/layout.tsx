@@ -8,13 +8,13 @@ import "./globals.css";
 const geist = Geist({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "bb-todo | 빵빵투두",
+  title: "할일빵빵",
   description: "GitHub TODO.md PWA",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "bb-todo",
+    title: "할일빵빵",
   },
 };
 

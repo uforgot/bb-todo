@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "bb-todo (빵빵투두)",
-    short_name: "bb-todo",
+    name: "할일빵빵",
+    short_name: "할일빵빵",
     description: "GitHub TODO.md PWA",
     start_url: "/",
     display: "standalone",
