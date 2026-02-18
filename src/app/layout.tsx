@@ -1,5 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
+import { ToastProvider } from "@/components/ui/toast";
+import { ThemeProvider } from "@/components/theme-provider";
+import { BottomTabBar } from "@/components/bottom-tab-bar";
 import "./globals.css";
 
 const geist = Geist({ subsets: ["latin"] });
@@ -28,8 +31,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ko">
-      <body className={`${geist.className} antialiased`}>{children}</body>
+    <html lang="ko" suppressHydrationWarning>
+      <body className={`${geist.className} antialiased`}>
+        <ThemeProvider>
+          <ToastProvider>
+            <div className="pb-14">{children}</div>
+            <BottomTabBar />
+          </ToastProvider>
+        </ThemeProvider>
+      </body>
     </html>
   );
 }

@@ -14,9 +14,10 @@ import { countItems, type TodoSection as TodoSectionType } from "@/lib/parser";
 interface TodoSectionProps {
   section: TodoSectionType;
   defaultOpen?: boolean;
+  onToggle?: (lineIndex: number, checked: boolean) => void;
 }
 
-export function TodoSection({ section, defaultOpen = true }: TodoSectionProps) {
+export function TodoSection({ section, defaultOpen = true, onToggle }: TodoSectionProps) {
   const { total, completed } = countItems([section]);
   const allDone = total > 0 && completed === total;
 
@@ -52,7 +53,7 @@ export function TodoSection({ section, defaultOpen = true }: TodoSectionProps) {
               {section.items.length > 0 && (
                 <div className="space-y-1">
                   {section.items.map((item, idx) => (
-                    <TodoItem key={idx} item={item} />
+                    <TodoItem key={idx} item={item} onToggle={onToggle} />
                   ))}
                 </div>
               )}
@@ -63,6 +64,7 @@ export function TodoSection({ section, defaultOpen = true }: TodoSectionProps) {
                       key={idx}
                       section={child}
                       defaultOpen={false}
+                      onToggle={onToggle}
                     />
                   ))}
                 </div>
