@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ListTodo, Archive, Timer } from "lucide-react";
+import { ListTodo, Archive, Timer, Brain, Sparkles } from "lucide-react";
 
 export function BottomTabBar() {
   const pathname = usePathname();
@@ -36,6 +36,24 @@ export function BottomTabBar() {
         >
           <Timer className="h-5 w-5" />
           Cron
+        </Link>
+        <Link
+          href="/bbang"
+          className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+            pathname === "/bbang" ? "text-foreground font-medium" : "text-muted-foreground"
+          }`}
+        >
+          <Brain className="h-5 w-5" />
+          빵빵
+        </Link>
+        <Link
+          href="/pang"
+          className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+            pathname === "/pang" ? "text-foreground font-medium" : "text-muted-foreground"
+          }`}
+        >
+          <Sparkles className="h-5 w-5" />
+          팡팡
         </Link>
       </div>
     </nav>
