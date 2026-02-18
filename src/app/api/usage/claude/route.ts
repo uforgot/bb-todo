@@ -14,6 +14,7 @@ export async function GET() {
     return NextResponse.json(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to fetch";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const hasKey = !!API_KEY;
+    return NextResponse.json({ error: message, hasKey, url: `${BASE_URL}/usage/claude` }, { status: 500 });
   }
 }
