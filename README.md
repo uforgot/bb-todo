@@ -47,38 +47,46 @@ AI 에이전트 모니터링(크론, 사용량, 메모리 이력)까지 통합�
 [Mobile / Browser]
     ↓ SWR (client-side)
 [Next.js API Routes on Vercel]
-    ├── /api/todo          → bb-samsara/TODO.md
-    ├── /api/archive       → bb-samsara/TODO-archive.md
-    ├── /api/cron          → bb-samsara/backup/cron-jobs.json
-    ├── /api/usage         → bb-samsara/backup/usage-logs.json
-    └── /api/memory-history → GitHub Commits API (diff)
-    ↓
-[GitHub uforgot/bb-samsara + uforgot/pp-samsara]
+    ├── /api/todo            → GitHub bb-samsara/TODO.md
+    ├── /api/archive         → GitHub bb-samsara/TODO-archive.md
+    ├── /api/cron            → GitHub bb-samsara/backup/cron-jobs.json
+    ├── /api/usage           → 로컬 Usage API (실시간)
+    └── /api/memory-history  → GitHub Commits API (diff)
+
+[Usage 실시간 데이터 흐름]
+Vercel /api/usage
+    ↓ fetch (Bearer token)
+Tailscale Funnel (https://ai.tail6603fc.ts.net)
+    ↓ proxy
+로컬 Usage API 서버 (localhost:3100)
+    ├── Claude → macOS plist (Claude Usage Tracker 앱)
+    └── Kimi → Moonshot API (/v1/users/me/balance)
 ```
 
-### 데이터 수집 흐름
+### 데이터 수집
 
-```
-OpenClaw 크론 (매일 07:00)
-    → update-usage-logs.sh (Claude + Kimi 사용량 수집)
-    → backup/*.json 파일 업데이트
-
-OpenClaw 크론 (매일 22:00)
-    → bb-samsara push (backup/ 포함 전체 workspace)
-
-bb-todo → GitHub API → bb-samsara → UI 표시
-```
+| 데이터 | 소스 | 방식 |
+|--------|------|------|
+| Todo / Archive | GitHub API | 정적 파일 |
+| Cron | GitHub API | 22:00 백업 |
+| **Usage** | **로컬 API 서버** | **실시간** |
+| Memory History | GitHub Commits API | 실시간 |
 
 ---
 
 ## Environment Variables
 
 ```env
+# GitHub (Todo, Archive, Cron, Memory)
 GITHUB_TOKEN=ghp_xxx
 GITHUB_OWNER=uforgot
 GITHUB_REPO=bb-samsara
 GITHUB_FILE_PATH=TODO.md
 GITHUB_BRANCH=main
+
+# Usage 실시간 API
+USAGE_API_URL=https://ai.tail6603fc.ts.net/usage
+USAGE_API_KEY=<Bearer token>
 ```
 
 ---
@@ -87,6 +95,10 @@ GITHUB_BRANCH=main
 
 ```
 bb-todo/
+├── server/                       # 로컬 Usage API 서버
+│   ├── usage-server.js           # Node.js HTTP 서버 (포트 3100)
+│   ├── start.sh                  # 환경변수 로드 + 실행
+│   └── .env                      # USAGE_API_KEY, USAGE_PORT
 ├── docs/                         # 메뉴별 문서
 │   ├── todo.md
 │   ├── archive.md
