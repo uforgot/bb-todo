@@ -3,9 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ListTodo, Archive, Timer, Activity, Brain, Sparkles } from "lucide-react";
+import { useCron } from "@/hooks/use-cron";
 
 export function BottomTabBar() {
   const pathname = usePathname();
+  const { jobs } = useCron();
+  const hasCronError = jobs.some((job) => (job.state?.consecutiveErrors ?? 0) > 0);
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-10 bg-background border-t" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
@@ -34,7 +37,12 @@ export function BottomTabBar() {
             pathname === "/cron" ? "text-foreground font-medium" : "text-muted-foreground"
           }`}
         >
-          <Timer className="h-5 w-5" />
+          <div className="relative">
+            <Timer className="h-5 w-5" />
+            {hasCronError && (
+              <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-destructive" />
+            )}
+          </div>
           Cron
         </Link>
         <Link
