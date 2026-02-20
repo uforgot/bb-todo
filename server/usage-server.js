@@ -15,10 +15,52 @@ const path = require("path");
 const PORT = process.env.USAGE_PORT || 3100;
 const API_KEY = process.env.USAGE_API_KEY;
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 if (!API_KEY) {
   console.error("❌ USAGE_API_KEY is required");
   process.exit(1);
+}
+
+// --- Supabase insert ---
+function insertCronRun(payload) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    console.warn("⚠️ Supabase not configured, skipping cron run insert");
+    return Promise.resolve(null);
+  }
+  // Remove undefined fields so Supabase uses column defaults
+  const cleanPayload = Object.fromEntries(
+    Object.entries(payload).filter(([, v]) => v !== undefined)
+  );
+  return new Promise((resolve) => {
+    const body = JSON.stringify(cleanPayload);
+    const url = new URL(`${SUPABASE_URL}/rest/v1/cron_runs`);
+    const req = https.request(
+      {
+        hostname: url.hostname,
+        path: url.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          apikey: SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          Prefer: "return=minimal",
+        },
+      },
+      (res) => {
+        res.on("data", () => {});
+        res.on("end", () => resolve(res.statusCode));
+      }
+    );
+    req.on("error", (e) => {
+      console.error("Supabase insert error:", e.message);
+      resolve(null);
+    });
+    req.write(body);
+    req.end();
+  });
 }
 
 // --- Claude Usage (macOS plist) ---
@@ -123,14 +165,6 @@ function getKimiBalance() {
 
 // --- HTTP Server ---
 const server = http.createServer(async (req, res) => {
-  // Auth check
-  const auth = req.headers.authorization;
-  if (auth !== `Bearer ${API_KEY}`) {
-    res.writeHead(401, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Unauthorized" }));
-    return;
-  }
-
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Authorization");
@@ -142,6 +176,60 @@ const server = http.createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // Webhook endpoint: separate auth (OpenClaw cron.webhookToken = USAGE_API_KEY)
+  if (url.pathname === "/webhook/cron" && req.method === "POST") {
+    const webhookAuth = req.headers.authorization;
+    if (webhookAuth !== `Bearer ${API_KEY}`) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+    let rawBody = "";
+    req.on("data", (chunk) => (rawBody += chunk));
+    req.on("end", async () => {
+      try {
+        const payload = JSON.parse(rawBody);
+        console.log("[webhook/cron] received:", JSON.stringify(payload));
+
+        const { jobId, status, durationMs, ts, error: errMsg } = payload;
+        if (!jobId || !status) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "jobId and status required" }));
+          return;
+        }
+
+        const cronStatus = status === "ok" ? "ok" : "error";
+        const ranAt = ts ? new Date(ts).toISOString() : new Date().toISOString();
+
+        const statusCode = await insertCronRun({
+          job_id: jobId,
+          job_name: null,
+          status: cronStatus,
+          error: errMsg || null,
+          duration_ms: durationMs || null,
+          ran_at: ranAt,
+        });
+
+        console.log(`[webhook/cron] ${jobId} → ${cronStatus} (supabase: ${statusCode})`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        console.error("[webhook/cron] parse error:", e.message);
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON" }));
+      }
+    });
+    return;
+  }
+
+  // Auth check for all other routes
+  const auth = req.headers.authorization;
+  if (auth !== `Bearer ${API_KEY}`) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Unauthorized" }));
+    return;
+  }
 
   try {
     if (url.pathname === "/usage" || url.pathname === "/usage/") {
@@ -159,6 +247,29 @@ const server = http.createServer(async (req, res) => {
       const kimi = await getKimiBalance();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ kimi, timestamp: new Date().toISOString() }));
+    } else if (url.pathname === "/cron-status" && req.method === "POST") {
+      // body 읽기
+      let rawBody = "";
+      req.on("data", (chunk) => (rawBody += chunk));
+      req.on("end", async () => {
+        try {
+          const payload = JSON.parse(rawBody);
+          const { job_id, job_name, status, error, duration_ms } = payload;
+          if (!job_id || !status) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "job_id and status required" }));
+            return;
+          }
+          const statusCode = await insertCronRun({ job_id, job_name, status, error: error || null, duration_ms: duration_ms || null });
+          console.log(`[cron-status] ${job_name || job_id} → ${status} (supabase: ${statusCode})`);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid JSON" }));
+        }
+      });
+      return; // 비동기 처리이므로 early return
     } else if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
