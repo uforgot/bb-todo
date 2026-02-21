@@ -65,9 +65,9 @@ export function TodoSection({ section, defaultOpen = true, onToggle }: TodoSecti
         defaultValue={defaultOpen ? section.title : undefined}
       >
         <AccordionItem value={section.title} className="border-0">
-          <AccordionTrigger className="px-3 py-1.5 hover:no-underline hover:bg-accent/20 rounded-lg transition-colors">
+          <AccordionTrigger className="px-3 py-1 hover:no-underline hover:bg-accent/20 rounded-lg transition-colors">
             <div className="flex items-center gap-2">
-              <span className={`text-sm font-semibold text-balance ${allDone ? "text-muted-foreground line-through" : ""}`}>
+              <span className={`text-base font-semibold text-balance ${allDone ? "text-muted-foreground line-through" : ""}`}>
                 {section.title}
               </span>
               <CompletionCount completed={completed} total={total} />

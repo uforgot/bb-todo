@@ -15,14 +15,18 @@ export function TodoItem({ item, onToggle }: TodoItemProps) {
   const hasDesc = item.descriptions.length > 0;
 
   return (
-    <div>
-      <div className="flex items-start gap-2.5 py-1">
-        <label className="flex items-start gap-2.5 flex-1 cursor-pointer min-w-0">
-          <Checkbox
-            checked={item.checked}
-            onCheckedChange={(checked) => onToggle?.(item.line, !!checked)}
-            className="mt-0.5 shrink-0"
-          />
+    <div className="py-1.5">
+      <div className="flex items-start gap-2.5">
+        <Checkbox
+          checked={item.checked}
+          onCheckedChange={(checked) => onToggle?.(item.line, !!checked)}
+          className="mt-0.5 shrink-0 size-5"
+        />
+        <button
+          type="button"
+          onClick={() => hasDesc && setOpen((o) => !o)}
+          className={`flex-1 text-left min-w-0 ${hasDesc ? "cursor-pointer" : "cursor-default"}`}
+        >
           <span
             className={`text-sm leading-snug text-pretty ${
               item.checked ? "line-through text-muted-foreground" : ""
@@ -30,23 +34,19 @@ export function TodoItem({ item, onToggle }: TodoItemProps) {
           >
             {item.text}
           </span>
-        </label>
+        </button>
         {hasDesc && (
-          <button
-            onClick={() => setOpen((o) => !o)}
-            className="shrink-0 size-4 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors mt-0.5"
-            aria-label="설명 보기"
-          >
+          <span className="shrink-0 size-4 flex items-center justify-center text-muted-foreground mt-0.5">
             {open ? (
               <Minus className="size-3" />
             ) : (
               <Plus className="size-3" />
             )}
-          </button>
+          </span>
         )}
       </div>
       {hasDesc && open && (
-        <ul className="ml-7 mb-0.5 space-y-0">
+        <ul className="ml-8 mt-1 space-y-0.5">
           {item.descriptions.map((desc, i) => (
             <li key={i} className="text-xs text-muted-foreground leading-snug text-pretty">
               {desc}
