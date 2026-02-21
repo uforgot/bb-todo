@@ -53,20 +53,15 @@ export async function fetchMemoryHistory(
 
   const commits: Array<{ sha: string; commit: { committer: { date: string }; message: string } }> = await commitsRes.json();
 
-  // Deduplicate by date (keep latest commit per day)
-  const seen = new Set<string>();
-  const uniqueCommits: Array<{ sha: string; date: string; message: string }> = [];
-  for (const c of commits) {
-    const date = c.commit.committer.date.slice(0, 10);
-    if (!seen.has(date)) {
-      seen.add(date);
-      uniqueCommits.push({ sha: c.sha, date: c.commit.committer.date, message: c.commit.message });
-    }
-  }
+  const allCommits = commits.map((c) => ({
+    sha: c.sha,
+    date: c.commit.committer.date,
+    message: c.commit.message,
+  }));
 
   // 2. Fetch each commit detail to get the patch
   const versions: MemoryVersion[] = [];
-  for (const entry of uniqueCommits) {
+  for (const entry of allCommits) {
     try {
       const detailUrl = `${GITHUB_API}/repos/${owner}/${repo}/commits/${entry.sha}`;
       const detailRes = await fetch(detailUrl, {
