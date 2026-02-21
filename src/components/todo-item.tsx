@@ -16,11 +16,11 @@ export function TodoItem({ item, onToggle }: TodoItemProps) {
 
   return (
     <div className="py-1.5">
-      <div className="flex items-start gap-2.5">
+      <div className="flex items-center gap-2.5">
         <Checkbox
           checked={item.checked}
           onCheckedChange={(checked) => onToggle?.(item.line, !!checked)}
-          className="mt-0.5 shrink-0 size-5"
+          className="shrink-0 size-5"
         />
         <button
           type="button"
@@ -36,7 +36,7 @@ export function TodoItem({ item, onToggle }: TodoItemProps) {
           </span>
         </button>
         {hasDesc && (
-          <span className="shrink-0 size-4 flex items-center justify-center text-muted-foreground mt-0.5">
+          <span className="shrink-0 size-4 flex items-center justify-center text-muted-foreground">
             {open ? (
               <Minus className="size-3" />
             ) : (
