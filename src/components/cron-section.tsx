@@ -78,7 +78,7 @@ function CronJobCard({ job }: { job: CronJob }) {
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-2">
           <span className="text-xs text-muted-foreground">
-            {formatNextRun(job.state?.nextRunAtMs)}
+            {formatNextRun(job.state?.lastRunAtMs)}
           </span>
           <span className={`w-1.5 h-1.5 rounded-full ${
             hasError ? "bg-destructive" : isOk ? "bg-green-500" : "bg-muted"
