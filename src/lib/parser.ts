@@ -2,6 +2,7 @@ export interface TodoItem {
   text: string;
   checked: boolean;
   line: number;
+  descriptions: string[];
 }
 
 export interface TodoSection {
@@ -46,7 +47,21 @@ export function parseTodoMd(content: string): TodoSection[] {
     if (checkboxMatch && stack.length > 0) {
       const checked = checkboxMatch[1].toLowerCase() === "x";
       const text = checkboxMatch[2].trim();
-      stack[stack.length - 1].section.items.push({ text, checked, line: i });
+      const descriptions: string[] = [];
+
+      // Look ahead for indented description lines (2+ spaces then "- text")
+      let j = i + 1;
+      while (j < lines.length) {
+        const descMatch = lines[j].match(/^\s{2,}-\s+(.+)$/);
+        if (descMatch) {
+          descriptions.push(descMatch[1].trim());
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      stack[stack.length - 1].section.items.push({ text, checked, line: i, descriptions });
     }
   }
 
