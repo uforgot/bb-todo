@@ -8,9 +8,10 @@ import type { TodoItem as TodoItemType } from "@/lib/parser";
 interface TodoItemProps {
   item: TodoItemType;
   onToggle?: (lineIndex: number, checked: boolean) => void;
+  disabled?: boolean;
 }
 
-export function TodoItem({ item, onToggle }: TodoItemProps) {
+export function TodoItem({ item, onToggle, disabled }: TodoItemProps) {
   const [open, setOpen] = useState(false);
   const hasDesc = item.descriptions.length > 0;
 
@@ -20,6 +21,7 @@ export function TodoItem({ item, onToggle }: TodoItemProps) {
         <Checkbox
           checked={item.checked}
           onCheckedChange={(checked) => onToggle?.(item.line, !!checked)}
+          disabled={disabled}
           className="shrink-0 size-5"
         />
         <button

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 
 interface BatchUpdateOptions {
   /** Debounce window in ms (default: 3000) */
@@ -17,11 +17,13 @@ export function useBatchUpdate({
   const pendingRef = useRef<Map<number, boolean>>(new Map());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushingRef = useRef(false);
+  const [isFlushing, setIsFlushing] = useState(false);
 
   const flush = useCallback(async () => {
     if (pendingRef.current.size === 0 || flushingRef.current) return;
 
     flushingRef.current = true;
+    setIsFlushing(true);
     const toggles = new Map(pendingRef.current);
     pendingRef.current.clear();
 
@@ -37,6 +39,7 @@ export function useBatchUpdate({
       throw err; // Re-throw so the caller can handle rollback
     } finally {
       flushingRef.current = false;
+      setIsFlushing(false);
     }
   }, [onFlush, getSha]);
 
@@ -60,5 +63,5 @@ export function useBatchUpdate({
     return pendingRef.current.size > 0;
   }, []);
 
-  return { queue, flush, hasPending };
+  return { queue, flush, hasPending, isFlushing };
 }

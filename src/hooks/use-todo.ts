@@ -56,7 +56,7 @@ export function useTodo(onError?: (message: string) => void) {
     [mutate]
   );
 
-  const { queue, flush } = useBatchUpdate({
+  const { queue, flush, isFlushing } = useBatchUpdate({
     debounceMs: 3000,
     onFlush: async (toggles, sha) => {
       // Snapshot for rollback
@@ -112,5 +112,6 @@ export function useTodo(onError?: (message: string) => void) {
     flush,
     refresh,
     mutate,
+    isFlushing,
   };
 }

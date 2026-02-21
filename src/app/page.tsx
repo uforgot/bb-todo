@@ -13,7 +13,7 @@ import { AlertCircle } from "lucide-react";
 
 export default function Home() {
   const { showError } = useToast();
-  const { sections, isLoading, isError, toggle, refresh } = useTodo(showError);
+  const { sections, isLoading, isError, toggle, refresh, isFlushing } = useTodo(showError);
   const { total, completed } = countItems(sections);
   const { requestPermission, checkDeadlines } = useNotifications();
 
@@ -61,6 +61,7 @@ export default function Home() {
                 section={section}
                 defaultOpen={idx < 3}
                 onToggle={toggle}
+                isFlushing={isFlushing}
               />
             ))}
           </div>

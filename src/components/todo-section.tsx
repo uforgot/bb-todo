@@ -14,6 +14,7 @@ interface TodoSectionProps {
   section: TodoSectionType;
   defaultOpen?: boolean;
   onToggle?: (lineIndex: number, checked: boolean) => void;
+  isFlushing?: boolean;
 }
 
 function CompletionCount({ completed, total }: { completed: number; total: number }) {
@@ -26,34 +27,32 @@ function CompletionCount({ completed, total }: { completed: number; total: numbe
   );
 }
 
-/* 소구분 (###) — Things식 Heading: 아코디언 없이 텍스트 + 구분선 */
-function ChildSection({ section, onToggle }: { section: TodoSectionType; onToggle?: (lineIndex: number, checked: boolean) => void }) {
+/* 소구분 (###) — Things식 Heading */
+function ChildSection({ section, onToggle, isFlushing }: { section: TodoSectionType; onToggle?: (lineIndex: number, checked: boolean) => void; isFlushing?: boolean }) {
   const { total, completed } = countItems([section]);
 
   return (
     <div className="mt-2 first:mt-0">
-      {/* Heading */}
       <div className="flex items-center gap-2 pb-1 mb-0.5 border-b border-border/20">
         <span className="text-xs font-semibold text-muted-foreground">
           {section.title}
         </span>
         <CompletionCount completed={completed} total={total} />
       </div>
-      {/* Items */}
       <div>
         {section.items.map((item, idx) => (
-          <TodoItem key={idx} item={item} onToggle={onToggle} />
+          <TodoItem key={idx} item={item} onToggle={onToggle} disabled={isFlushing} />
         ))}
         {section.children.map((child, idx) => (
-          <ChildSection key={idx} section={child} onToggle={onToggle} />
+          <ChildSection key={idx} section={child} onToggle={onToggle} isFlushing={isFlushing} />
         ))}
       </div>
     </div>
   );
 }
 
-/* 대구분 (##) — Card + Accordion 유지 */
-export function TodoSection({ section, defaultOpen = true, onToggle }: TodoSectionProps) {
+/* 대구분 (##) — Card + Accordion */
+export function TodoSection({ section, defaultOpen = true, onToggle, isFlushing }: TodoSectionProps) {
   const { total, completed } = countItems([section]);
   const allDone = total > 0 && completed === total;
 
@@ -78,14 +77,14 @@ export function TodoSection({ section, defaultOpen = true, onToggle }: TodoSecti
               {section.items.length > 0 && (
                 <div>
                   {section.items.map((item, idx) => (
-                    <TodoItem key={idx} item={item} onToggle={onToggle} />
+                    <TodoItem key={idx} item={item} onToggle={onToggle} disabled={isFlushing} />
                   ))}
                 </div>
               )}
               {section.children.length > 0 && (
                 <div className={section.items.length > 0 ? "mt-1.5" : ""}>
                   {section.children.map((child, idx) => (
-                    <ChildSection key={idx} section={child} onToggle={onToggle} />
+                    <ChildSection key={idx} section={child} onToggle={onToggle} isFlushing={isFlushing} />
                   ))}
                 </div>
               )}
