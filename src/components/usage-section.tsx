@@ -48,6 +48,12 @@ function formatRelativeTime(dateStr: string): string {
   return `${days}일 전`;
 }
 
+function getBarColor(percentage: number, base = "bg-blue-500"): string {
+  if (percentage >= 90) return "bg-red-500";
+  if (percentage >= 70) return "bg-yellow-500";
+  return base;
+}
+
 function ProgressBar({ percentage, color = "bg-blue-500" }: { percentage: number; color?: string }) {
   return (
     <div className="h-2.5 w-full rounded-full bg-muted">
@@ -78,11 +84,10 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
     return () => clearInterval(id);
   }, []);
 
-  const weeklyColor = summary.weekly_percentage >= 90
-    ? "bg-red-500"
-    : summary.weekly_percentage >= 70
-      ? "bg-yellow-500"
-      : "bg-blue-500";
+  const weeklyColor = getBarColor(summary.weekly_percentage);
+  const sessionColor = getBarColor(summary.session_percentage);
+  const sonnetColor = getBarColor(summary.sonnet_weekly_percentage);
+  const opusColor = getBarColor(summary.opus_weekly_percentage, "bg-purple-500");
 
   return (
     <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-5">
@@ -96,7 +101,7 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
         <p className="text-xs text-muted-foreground">{formatCountdown(summary.session_reset_time)}</p>
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <ProgressBar percentage={summary.session_percentage} color="bg-blue-500" />
+            <ProgressBar percentage={summary.session_percentage} color={sessionColor} />
           </div>
           <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.session_percentage}% 사용됨</span>
         </div>
@@ -124,7 +129,7 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
           <p className="text-xs text-muted-foreground">{formatResetTime(summary.weekly_reset_time)}</p>
           <div className="flex items-center gap-3">
             <div className="flex-1">
-              <ProgressBar percentage={summary.sonnet_weekly_percentage} color="bg-blue-500" />
+              <ProgressBar percentage={summary.sonnet_weekly_percentage} color={sonnetColor} />
             </div>
             <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.sonnet_weekly_percentage}% 사용됨</span>
           </div>
@@ -136,7 +141,7 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
             <p className="text-xs font-medium">Opus</p>
             <div className="flex items-center gap-3">
               <div className="flex-1">
-                <ProgressBar percentage={summary.opus_weekly_percentage} color="bg-purple-500" />
+                <ProgressBar percentage={summary.opus_weekly_percentage} color={opusColor} />
               </div>
               <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.opus_weekly_percentage}% 사용됨</span>
             </div>
