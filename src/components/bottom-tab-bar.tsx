@@ -11,7 +11,7 @@ export function BottomTabBar() {
   const hasCronError = jobs.some((job) => (job.state?.consecutiveErrors ?? 0) > 0);
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-10 bg-background border-t" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+    <nav className="shrink-0 bg-background border-t" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
       <div className="flex max-w-2xl mx-auto">
         <Link
           href="/"

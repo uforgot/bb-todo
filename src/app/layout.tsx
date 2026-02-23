@@ -36,8 +36,10 @@ export default function RootLayout({
       <body className={`${geist.className} antialiased`}>
         <ThemeProvider>
           <ToastProvider>
-            <div className="pb-[calc(3.5rem+env(safe-area-inset-bottom,0px))]">{children}</div>
-            <BottomTabBar />
+            <div className="flex flex-col h-[100dvh]">
+              <main className="flex-1 overflow-y-auto">{children}</main>
+              <BottomTabBar />
+            </div>
           </ToastProvider>
         </ThemeProvider>
       </body>
