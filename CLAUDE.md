@@ -70,7 +70,11 @@ GITHUB_FILE_PATH=TODO.md
 
 ## Known Issues / TODO
 
-- [ ] CronSection이 merge conflict로 인해 page.tsx에서 누락됨 — 재추가 필요
-- [ ] fetchCronJobs()가 github.ts에서 누락됨 — 재추가 필요
 - [ ] 다크 모드
 - [ ] 푸시 알림
+- [ ] GitHub 원본 링크 버튼 클릭 시 링크 작동 안 함
+
+## Notes
+
+- CronSection은 page.tsx가 아닌 `/cron` 별도 탭 페이지에 있음 (정상)
+- fetchCronJobs()는 github.ts line 137에 존재 (정상)
