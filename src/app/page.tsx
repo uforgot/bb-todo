@@ -70,7 +70,11 @@ export default function Home() {
     ? sections[0].children
     : sections;
 
-  const todayItems = collectTodayItems(flatSections);
+  // Sort: !1 → !2 → none
+  const priorityOrder = (s: TodoSectionType) => s.priority === '!1' ? 0 : s.priority === '!2' ? 1 : 2;
+  const sortedSections = [...flatSections].sort((a, b) => priorityOrder(a) - priorityOrder(b));
+
+  const todayItems = collectTodayItems(sortedSections);
   const todayLines = new Set(todayItems.map((t) => t.item.line));
 
   return (
@@ -97,7 +101,7 @@ export default function Home() {
             </Card>
           )}
           <div className="space-y-0">
-            {flatSections.map((section, idx) => (
+            {sortedSections.map((section, idx) => (
               <TodoSection
                 key={idx}
                 section={section}
