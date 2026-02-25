@@ -20,7 +20,7 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel }: Tod
   return (
     <div className={`py-1.5 ${dimmed ? "opacity-70" : ""}`}>
       {sectionLabel && (
-        <span className="text-xs font-medium text-muted-foreground/70 leading-none mt-2 mb-1 block first:mt-0">{sectionLabel}</span>
+        <span className="text-xs font-medium text-muted-foreground/70 leading-none mt-4 mb-1.5 block first:mt-0">{sectionLabel}</span>
       )}
       <div className="flex items-center gap-2.5">
         <Checkbox
