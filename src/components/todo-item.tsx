@@ -9,14 +9,25 @@ interface TodoItemProps {
   item: TodoItemType;
   onToggle?: (lineIndex: number, checked: boolean) => void;
   disabled?: boolean;
+  dimmed?: boolean;
+  sectionLabel?: string;
 }
 
-export function TodoItem({ item, onToggle, disabled }: TodoItemProps) {
+export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel }: TodoItemProps) {
   const [open, setOpen] = useState(false);
   const hasDesc = item.descriptions.length > 0;
 
+  const borderClass = !item.checked && item.priority === '!1'
+    ? "border-l-4 border-l-[#EF4444] pl-2"
+    : !item.checked && item.priority === '!2'
+    ? "border-l-4 border-l-[#F97316] pl-2"
+    : "";
+
   return (
-    <div className="py-1.5">
+    <div className={`py-1.5 ${borderClass} ${dimmed ? "opacity-70" : ""}`}>
+      {sectionLabel && (
+        <span className="text-[10px] text-muted-foreground/60 leading-none mb-0.5 block">{sectionLabel}</span>
+      )}
       <div className="flex items-center gap-2.5">
         <Checkbox
           checked={item.checked}

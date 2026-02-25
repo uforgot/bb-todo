@@ -2,14 +2,35 @@
 
 import { useEffect } from "react";
 import { useTodo } from "@/hooks/use-todo";
-import { countItems } from "@/lib/parser";
+import { countItems, type TodoItem as TodoItemType, type TodoSection as TodoSectionType } from "@/lib/parser";
 import { TodoHeader } from "@/components/todo-header";
 import { TodoSection } from "@/components/todo-section";
+import { TodoItem } from "@/components/todo-item";
+import { Card, CardContent } from "@/components/ui/card";
 import { TodoSkeleton } from "@/components/todo-skeleton";
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { useToast } from "@/components/ui/toast";
 import { useNotifications } from "@/hooks/use-notifications";
 import { AlertCircle } from "lucide-react";
+
+interface TodayItem {
+  item: TodoItemType;
+  sectionTitle: string;
+}
+
+function collectTodayItems(sections: TodoSectionType[], parentTitle?: string): TodayItem[] {
+  const result: TodayItem[] = [];
+  for (const section of sections) {
+    const label = parentTitle || section.title;
+    for (const item of section.items) {
+      if (item.today) {
+        result.push({ item, sectionTitle: label });
+      }
+    }
+    result.push(...collectTodayItems(section.children, label));
+  }
+  return result;
+}
 
 export default function Home() {
   const { showError } = useToast();
@@ -49,11 +70,32 @@ export default function Home() {
     ? sections[0].children
     : sections;
 
+  const todayItems = collectTodayItems(flatSections);
+  const todayLines = new Set(todayItems.map((t) => t.item.line));
+
   return (
     <>
       <TodoHeader total={total} completed={completed} />
       <PullToRefresh onRefresh={refresh}>
         <main className="max-w-2xl mx-auto py-2 px-2">
+          {todayItems.length > 0 && (
+            <Card className="border border-border/50 shadow-none rounded-lg mb-1">
+              <CardContent className="pt-2 pb-1.5 px-3">
+                <span className="text-base font-semibold">⭐ 오늘</span>
+                <div className="mt-1">
+                  {todayItems.map((t) => (
+                    <TodoItem
+                      key={t.item.line}
+                      item={t.item}
+                      onToggle={toggle}
+                      disabled={isFlushing}
+                      sectionLabel={t.sectionTitle}
+                    />
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
           <div className="space-y-0">
             {flatSections.map((section, idx) => (
               <TodoSection
@@ -62,6 +104,7 @@ export default function Home() {
                 defaultOpen={idx < 3}
                 onToggle={toggle}
                 isFlushing={isFlushing}
+                todayLines={todayLines}
               />
             ))}
           </div>
