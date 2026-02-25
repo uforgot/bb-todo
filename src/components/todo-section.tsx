@@ -18,11 +18,6 @@ interface TodoSectionProps {
   todayLines?: Set<number>;
 }
 
-function hasP1Items(section: TodoSectionType): boolean {
-  if (section.items.some((item) => !item.checked && item.priority === "!1")) return true;
-  return section.children.some(hasP1Items);
-}
-
 function CompletionCount({ completed, total }: { completed: number; total: number }) {
   if (total === 0) return null;
   const allDone = completed === total;
@@ -61,10 +56,15 @@ function ChildSection({ section, onToggle, isFlushing, todayLines }: { section: 
 export function TodoSection({ section, defaultOpen = true, onToggle, isFlushing, todayLines }: TodoSectionProps) {
   const { total, completed } = countItems([section]);
   const allDone = total > 0 && completed === total;
-  const showP1Accent = !allDone && hasP1Items(section);
+
+  const priorityBorder = !allDone && section.priority === '!1'
+    ? "border-l-4 border-l-[#EF4444]"
+    : !allDone && section.priority === '!2'
+    ? "border-l-4 border-l-[#F97316]"
+    : "";
 
   return (
-    <Card className={`border shadow-none rounded-lg mb-1 ${allDone ? "border-border/30 opacity-60" : "border-border/50"} ${showP1Accent ? "border-l-4 border-l-[#EF4444]/40" : ""}`}>
+    <Card className={`border shadow-none rounded-lg mb-1 ${allDone ? "border-border/30 opacity-60" : "border-border/50"} ${priorityBorder}`}>
       <Accordion
         type="single"
         collapsible

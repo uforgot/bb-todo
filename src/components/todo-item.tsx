@@ -17,15 +17,8 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel }: Tod
   const [open, setOpen] = useState(false);
   const hasDesc = item.descriptions.length > 0;
 
-  const showBorder = !item.checked && !sectionLabel;
-  const borderClass = showBorder && item.priority === '!1'
-    ? "border-l-4 border-l-[#EF4444] pl-2"
-    : showBorder && item.priority === '!2'
-    ? "border-l-4 border-l-[#F97316] pl-2"
-    : "";
-
   return (
-    <div className={`py-1.5 ${borderClass} ${dimmed ? "opacity-70" : ""}`}>
+    <div className={`py-1.5 ${dimmed ? "opacity-70" : ""}`}>
       {sectionLabel && (
         <span className="text-[10px] text-muted-foreground/60 leading-none mb-0.5 block">{sectionLabel}</span>
       )}

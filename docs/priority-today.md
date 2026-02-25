@@ -3,38 +3,43 @@
 ## Overview
 
 Two new features for 할일빵빵:
-1. **Priority tags** (!1/!2) — visual urgency indicators
-2. **Today view** (★) — "오늘 할 일" focus mode, inspired by Things
+1. **Section priority** (!1/!2) — visual urgency on accordion cards (## level)
+2. **Today view** (★) — "오늘 할 일" focus mode on individual items, inspired by Things
 
 ## Markdown Syntax
 
+### Section Priority (## headings only)
 ```markdown
-- [ ] !1 긴급한 할일           → 빨간 보더
-- [ ] !2 중요한 할일           → 주황 보더
-- [ ] ★ 오늘 할 일             → "오늘" 섹션에 표시
-- [ ] !1 ★ 긴급 + 오늘 할 일   → 빨간 보더 + "오늘" 표시
-- [ ] 일반 할일                → 기본 (보더 없음)
+## !1 🚗 KIA 리뉴얼          → 아코디언 카드에 빨간 좌측 보더
+## !2 ✍️ 글쓰기               → 아코디언 카드에 주황 좌측 보더
+## 🖼️ kia_image_manager      → 기본 (보더 없음)
 ```
 
-**Token order:** `!1` → `★` → content (priority first, then today tag)
+### Today Tag (individual items only)
+```markdown
+- [ ] ★ Header 피드백 적용    → "오늘" 섹션에 표시, 주황색 텍스트
+- [ ] Footer 피드백 적용      → 일반
+```
 
-## Priority System
+**!1/!2 is for sections. ★ is for items. They do NOT mix.**
+
+## Section Priority System
 
 | Tag | Meaning | Visual |
 |-----|---------|--------|
-| `!1` | 긴급 | Left border 4px red (`#EF4444`) |
-| `!2` | 중요 | Left border 4px orange (`#F97316`) |
+| `!1` | 긴급 | Card left border 4px red (`#EF4444`) |
+| `!2` | 중요 | Card left border 4px orange (`#F97316`) |
 | (none) | 일반 | No border |
 
-- Priority is **per-item**, not per-section
-- Completed items: priority indicator hidden
-- No icon/emoji in UI — **color-only** (user is not colorblind)
+- Priority is **per-section** (## heading), NOT per-item
+- Applied to the accordion Card component
+- Parser: extract from heading title, strip from display text
 
 ## Today View (★)
 
 ### Concept
 - Inspired by Things "Today" — morning focus list
-- ★ tag marks items as "doing today" regardless of priority
+- ★ tag on individual `- [ ]` items marks them as "doing today"
 - Top pinned section shows all ★ items as a **virtual view** (reference, not copy)
 
 ### UI Structure
@@ -42,62 +47,65 @@ Two new features for 할일빵빵:
 ```
 ┌─────────────────────────────┐
 │ ⭐ 오늘                      │  ← Always-visible top section
-│  ☐ KIA 피그마 피드백 정리     │     (aggregated from all sections)
-│  ☐ 박성우 전화               │
+│  KIA 리뉴얼                  │     (source section label)
+│  ☐ Header 피드백 적용        │     (orange text)
+│  KIA 리뉴얼                  │
+│  ☐ MA 컨텐츠 회의            │
 └─────────────────────────────┘
 
-┌ 🚗 KIA Worldwide ──────────┐  ← Existing accordion
-│  🔴│ ☐ 피그마 피드백 정리    │     (★ items slightly dimmed here)
-│    │ ☐ GNB 그림자 가이드     │
-└─────────────────────────────┘
+┌ 🚗 KIA 리뉴얼 ──────────────┐  ← Red border (if !1)
+│  ☐ Header 피드백 적용        │     (dimmed — already in 오늘)
+│  ☐ GNB 그림자 가이드         │
+└──────────────────────────────┘
 ```
+
+### Visual
+- ★ items: text color orange (`#F97316`), no border/icon
+- In "오늘" section: no priority border, just orange text + section label
+- In original section: ★ items shown with `opacity-70` (dimmed)
 
 ### Behavior
 - ★ items appear in **both** "오늘" section and original section
-- Original section: ★ item shown with slight dim (opacity or subtle indicator)
-- Check in either location → marks complete in both (same item)
+- Check in either location → marks complete in both (same line number)
 - Remove ★ → disappears from "오늘" section
 - "오늘" section hidden when no ★ items exist
-
-### Toggle Mechanism
-- App: tap/long-press → toggle ★
-- GitHub write: add/remove `★` character in the line
 
 ## Agent Rules
 
 ```
 Agents (빵빵, 팡팡) MUST NOT add ★ or !1/!2 tags.
-Only 형주 sets priority/today tags via the app.
+Only 형주 sets priority/today tags via the app or manual edit.
 Agents add items as plain: `- [ ] task description`
+Agents add sections as plain: `## Section Title`
 ```
-
-→ Add to AGENTS.md TODO.md Depth Structure section.
 
 ## Parser Changes
 
-- Regex: `/^- \[([ x])\] (?:(!1|!2) )?(?:(★) )?(.+)$/`
-- Extract: `completed`, `priority`, `today`, `content`
-- Minimal change to existing parser
+### Section priority
+- Heading regex: `/^(#{1,6})\s+(?:(!1|!2)\s+)?(.+)$/`
+- Extract priority from heading, strip from title
+- Add `priority: '!1' | '!2' | null` to TodoSection interface
 
-## GitHub API
-
-- Priority/today toggle: modify single line → commit
-- Debounce: 2s after last change
-- No file structure change — same TODO.md
+### Today tag
+- Checkbox regex: `/^[\s]*-\s+\[([ xX])\]\s+(?:(★)\s+)?(.+)$/`
+- Extract ★ from item, strip from text
+- Add `today: boolean` to TodoItem interface
 
 ## Implementation Order
 
-1. Parser: add priority + today regex
-2. UI: accordion left-border for priority
-3. UI: "오늘" top section (virtual view)
-4. Interaction: toggle priority (long-press menu)
-5. Interaction: toggle ★ (tap or menu)
-6. GitHub write: single-line update on toggle
+1. Parser: section priority + today regex
+2. UI: Card left-border for section priority (!1/!2)
+3. UI: ★ item orange text color
+4. UI: "오늘" top section (virtual view, dimmed originals)
+5. (Future) Interaction: toggle ★ in app
+6. (Future) Interaction: set section priority in app
 
 ## Rejected Alternatives
 
-- **Drag sort**: Overkill for single-user app. MD parsing + touch gesture complexity not worth it.
+- **Item-level priority (!1/!2 on checklist items)**: Confusing — mixes section urgency with item urgency. Section-level is cleaner.
+- **Drag sort**: Overkill for single-user app.
 - **↑↓ buttons**: Conflicts with accordion toggle touch targets.
-- **Section-based "오늘"** (팡팡 proposal): Items duplicated between sections, maintenance burden. Virtual view avoids this.
-- **P0/P1/P2/P3 labels**: 4 levels too many. 3 levels (긴급/중요/일반) sufficient.
-- **DB**: Breaks the single-file simplicity that makes 할일빵빵 work.
+- **Section-based "오늘"** (move items to ## 오늘): Items duplicated, maintenance burden.
+- **P0/P1/P2/P3 labels**: 4 levels too many.
+- **DB**: Breaks single-file simplicity.
+- **Emoji icons for priority**: User is not colorblind, color-only is cleaner.
