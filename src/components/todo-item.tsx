@@ -11,16 +11,20 @@ interface TodoItemProps {
   disabled?: boolean;
   dimmed?: boolean;
   sectionLabel?: string;
+  isFirstLabel?: boolean;
 }
 
-export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel }: TodoItemProps) {
+export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFirstLabel }: TodoItemProps) {
   const [open, setOpen] = useState(false);
   const hasDesc = item.descriptions.length > 0;
 
   return (
     <div className={`py-1.5 ${dimmed ? "opacity-70" : ""}`}>
       {sectionLabel && (
-        <span className="text-xs font-medium text-muted-foreground/70 leading-none mt-4 mb-1.5 block first:mt-0">{sectionLabel}</span>
+        <>
+          {!isFirstLabel && <hr className="border-border/30 mt-2 mb-3" />}
+          <span className="text-xs font-medium text-muted-foreground/70 leading-none mb-1.5 block">{sectionLabel}</span>
+        </>
       )}
       <div className="flex items-center gap-2.5">
         <Checkbox
