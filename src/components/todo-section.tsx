@@ -33,8 +33,8 @@ function ChildSection({ section, onToggle, isFlushing, todayLines }: { section: 
   const { total, completed } = countItems([section]);
 
   return (
-    <div className="mt-2 first:mt-0">
-      <div className="flex items-center gap-2 pb-1 mb-0.5 border-b border-border/20">
+    <div className="mt-3 first:mt-0">
+      <div className="flex items-center gap-2 pb-1.5 mb-1 border-b border-border/20">
         <span className="text-xs font-semibold text-muted-foreground">
           {section.title}
         </span>

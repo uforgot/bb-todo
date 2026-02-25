@@ -20,7 +20,7 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel }: Tod
   return (
     <div className={`py-1.5 ${dimmed ? "opacity-70" : ""}`}>
       {sectionLabel && (
-        <span className="text-[10px] text-muted-foreground/60 leading-none mb-0.5 block">{sectionLabel}</span>
+        <span className="text-xs font-medium text-muted-foreground/70 leading-none mt-2 mb-1 block first:mt-0">{sectionLabel}</span>
       )}
       <div className="flex items-center gap-2.5">
         <Checkbox
@@ -36,7 +36,7 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel }: Tod
         >
           <span
             className={`text-sm leading-snug text-pretty ${
-              item.checked ? "line-through text-muted-foreground" : item.today ? "text-[#F97316]" : ""
+              item.checked ? "line-through text-muted-foreground" : item.today ? "text-[#38BDF8]" : ""
             }`}
           >
             {item.text}
