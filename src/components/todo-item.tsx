@@ -17,9 +17,10 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel }: Tod
   const [open, setOpen] = useState(false);
   const hasDesc = item.descriptions.length > 0;
 
-  const borderClass = !item.checked && item.priority === '!1'
+  const showBorder = !item.checked && !sectionLabel;
+  const borderClass = showBorder && item.priority === '!1'
     ? "border-l-4 border-l-[#EF4444] pl-2"
-    : !item.checked && item.priority === '!2'
+    : showBorder && item.priority === '!2'
     ? "border-l-4 border-l-[#F97316] pl-2"
     : "";
 
@@ -42,7 +43,7 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel }: Tod
         >
           <span
             className={`text-sm leading-snug text-pretty ${
-              item.checked ? "line-through text-muted-foreground" : ""
+              item.checked ? "line-through text-muted-foreground" : item.today ? "text-[#F97316]" : ""
             }`}
           >
             {item.text}
