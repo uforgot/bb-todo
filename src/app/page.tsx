@@ -87,15 +87,19 @@ export default function Home() {
               <CardContent className="pt-2 pb-1.5 px-3">
                 <span className="text-base font-semibold">⭐ 오늘</span>
                 <div className="mt-1">
-                  {todayItems.map((t) => (
-                    <TodoItem
-                      key={t.item.line}
-                      item={t.item}
-                      onToggle={toggle}
-                      disabled={isFlushing}
-                      sectionLabel={t.sectionTitle}
-                    />
-                  ))}
+                  {todayItems.map((t, i) => {
+                    const prevLabel = i > 0 ? todayItems[i - 1].sectionTitle : null;
+                    const showLabel = t.sectionTitle !== prevLabel;
+                    return (
+                      <TodoItem
+                        key={t.item.line}
+                        item={t.item}
+                        onToggle={toggle}
+                        disabled={isFlushing}
+                        sectionLabel={showLabel ? t.sectionTitle : undefined}
+                      />
+                    );
+                  })}
                 </div>
               </CardContent>
             </Card>
