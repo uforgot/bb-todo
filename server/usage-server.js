@@ -179,12 +179,7 @@ const server = http.createServer(async (req, res) => {
 
   // Webhook endpoint: separate auth (OpenClaw cron.webhookToken = USAGE_API_KEY)
   if (url.pathname === "/webhook/cron" && req.method === "POST") {
-    const webhookAuth = req.headers.authorization;
-    if (webhookAuth !== `Bearer ${API_KEY}`) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Unauthorized" }));
-      return;
-    }
+    // No auth required — Tailscale private network only
     let rawBody = "";
     req.on("data", (chunk) => (rawBody += chunk));
     req.on("end", async () => {

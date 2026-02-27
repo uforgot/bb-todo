@@ -44,7 +44,7 @@ function cronToKorean(expr?: string): string {
 function CronJobCard({ job }: { job: CronJob }) {
   const [open, setOpen] = useState(false);
   const isOk = job.state?.lastStatus === "ok";
-  const hasError = (job.state?.consecutiveErrors ?? 0) > 0;
+  const hasError = (job.state?.consecutiveErrors ?? 0) > 0 || job.state?.lastStatus === "error";
   const hasMessage = !!job.payload?.message;
 
   return (
