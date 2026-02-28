@@ -122,7 +122,7 @@ export function CronSection() {
 
       {!isLoading && !isError && (
         <div className="space-y-1.5">
-          {jobs.map((job) => (
+          {[...jobs].sort((a, b) => { const pt = (e?: string) => { if (!e) return 9999; const p = e.trim().split(/\s+/); if (p.length < 2) return 9999; const h = p[1] === "*" ? 0 : parseInt(p[1].split(",")[0]); const m = p[0] === "*" ? 0 : parseInt(p[0]); return h * 60 + m; }; return pt(a.schedule.expr) - pt(b.schedule.expr); }).map((job) => (
             <CronJobCard key={job.id} job={job} />
           ))}
         </div>
