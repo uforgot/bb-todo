@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Local Usage API Server
- * Exposes Claude (macOS plist) + Kimi (Moonshot API) usage data
+ * Exposes Claude (macOS plist) + Kimi (Moonshot API) usage data + Cron status (SQLite)
  * Designed to run behind Tailscale Funnel
  */
 
@@ -11,16 +11,128 @@ const https = require("https");
 const plist = require("simple-plist");
 const fs = require("fs");
 const path = require("path");
+const Database = require("better-sqlite3");
 
 const PORT = process.env.USAGE_PORT || 3100;
 const API_KEY = process.env.USAGE_API_KEY;
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY;
+const CRON_JOBS_PATH = process.env.CRON_JOBS_PATH || path.join(require("os").homedir(), ".openclaw/cron/jobs.json");
+const CRON_POLL_INTERVAL = parseInt(process.env.CRON_POLL_INTERVAL || "300000"); // 5 min
+const DB_PATH = process.env.CRON_DB_PATH || path.join(__dirname, "cron.db");
 
 if (!API_KEY) {
   console.error("❌ USAGE_API_KEY is required");
   process.exit(1);
 }
 
+// --- SQLite Setup ---
+const db = new Database(DB_PATH);
+db.pragma("journal_mode = WAL");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS cron_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    job_name TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    duration_ms INTEGER,
+    consecutive_errors INTEGER DEFAULT 0,
+    ran_at TEXT NOT NULL,
+    polled_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs(job_id, ran_at DESC);
+
+  CREATE TABLE IF NOT EXISTS cron_jobs (
+    job_id TEXT PRIMARY KEY,
+    job_name TEXT,
+    schedule TEXT,
+    enabled INTEGER DEFAULT 1,
+    last_status TEXT,
+    last_run_at TEXT,
+    last_duration_ms INTEGER,
+    consecutive_errors INTEGER DEFAULT 0,
+    next_run_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+console.log(`✅ SQLite DB ready: ${DB_PATH}`);
+
+// --- Cron Poller (reads jobs.json → SQLite) ---
+const upsertJob = db.prepare(`
+  INSERT INTO cron_jobs (job_id, job_name, schedule, enabled, last_status, last_run_at, last_duration_ms, consecutive_errors, next_run_at, updated_at)
+  VALUES (@job_id, @job_name, @schedule, @enabled, @last_status, @last_run_at, @last_duration_ms, @consecutive_errors, @next_run_at, datetime('now'))
+  ON CONFLICT(job_id) DO UPDATE SET
+    job_name=@job_name, schedule=@schedule, enabled=@enabled,
+    last_status=@last_status, last_run_at=@last_run_at, last_duration_ms=@last_duration_ms,
+    consecutive_errors=@consecutive_errors, next_run_at=@next_run_at, updated_at=datetime('now')
+`);
+
+const insertRun = db.prepare(`
+  INSERT INTO cron_runs (job_id, job_name, status, error, duration_ms, consecutive_errors, ran_at)
+  VALUES (@job_id, @job_name, @status, @error, @duration_ms, @consecutive_errors, @ran_at)
+`);
+
+const getLastRun = db.prepare(`SELECT ran_at FROM cron_runs WHERE job_id = ? ORDER BY ran_at DESC LIMIT 1`);
+
+function pollCronJobs() {
+  try {
+    if (!fs.existsSync(CRON_JOBS_PATH)) {
+      console.warn("[cron-poll] jobs.json not found:", CRON_JOBS_PATH);
+      return;
+    }
+    const raw = fs.readFileSync(CRON_JOBS_PATH, "utf-8");
+    const data = JSON.parse(raw);
+    const jobs = data.jobs || data || [];
+
+    let updated = 0;
+    for (const job of jobs) {
+      const state = job.state || {};
+      const schedule = job.schedule || {};
+      const schedStr = schedule.expr || (schedule.kind === "every" ? `every ${schedule.everyMs}ms` : "");
+      const lastRunAt = state.lastRunAtMs ? new Date(state.lastRunAtMs).toISOString() : null;
+      const nextRunAt = state.nextRunAtMs ? new Date(state.nextRunAtMs).toISOString() : null;
+
+      upsertJob.run({
+        job_id: job.id,
+        job_name: job.name || null,
+        schedule: schedStr,
+        enabled: job.enabled !== false ? 1 : 0,
+        last_status: state.lastStatus || null,
+        last_run_at: lastRunAt,
+        last_duration_ms: state.lastDurationMs || null,
+        consecutive_errors: state.consecutiveErrors || 0,
+        next_run_at: nextRunAt,
+      });
+
+      // Insert into history only if new run detected
+      if (lastRunAt) {
+        const lastRecorded = getLastRun.get(job.id);
+        if (!lastRecorded || lastRecorded.ran_at !== lastRunAt) {
+          insertRun.run({
+            job_id: job.id,
+            job_name: job.name || null,
+            status: state.lastStatus || "unknown",
+            error: state.lastError || null,
+            duration_ms: state.lastDurationMs || null,
+            consecutive_errors: state.consecutiveErrors || 0,
+            ran_at: lastRunAt,
+          });
+          updated++;
+        }
+      }
+    }
+    if (updated > 0) {
+      console.log(`[cron-poll] ${updated} new run(s) recorded, ${jobs.length} jobs synced`);
+    }
+  } catch (e) {
+    console.error("[cron-poll] error:", e.message);
+  }
+}
+
+// Initial poll + interval
+pollCronJobs();
+setInterval(pollCronJobs, CRON_POLL_INTERVAL);
+console.log(`✅ Cron poller started (interval: ${CRON_POLL_INTERVAL / 1000}s, source: ${CRON_JOBS_PATH})`);
 
 // --- Claude Usage (macOS plist) ---
 function getClaudeUsage() {
@@ -136,39 +248,7 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  // Webhook endpoint: separate auth (OpenClaw cron.webhookToken = USAGE_API_KEY)
-  if (url.pathname === "/webhook/cron" && req.method === "POST") {
-    // No auth required — Tailscale private network only
-    let rawBody = "";
-    req.on("data", (chunk) => (rawBody += chunk));
-    req.on("end", async () => {
-      try {
-        const payload = JSON.parse(rawBody);
-        console.log("[webhook/cron] received:", JSON.stringify(payload));
-
-        const { jobId, status, durationMs, ts, error: errMsg } = payload;
-        if (!jobId || !status) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "jobId and status required" }));
-          return;
-        }
-
-        const cronStatus = status === "ok" ? "ok" : "error";
-        const ranAt = ts ? new Date(ts).toISOString() : new Date().toISOString();
-
-        console.log(`[webhook/cron] ${jobId} → ${cronStatus}`);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (e) {
-        console.error("[webhook/cron] parse error:", e.message);
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid JSON" }));
-      }
-    });
-    return;
-  }
-
-  // Auth check for all other routes
+  // Auth check for all routes
   const auth = req.headers.authorization;
   if (auth !== `Bearer ${API_KEY}`) {
     res.writeHead(401, { "Content-Type": "application/json" });
@@ -192,28 +272,44 @@ const server = http.createServer(async (req, res) => {
       const kimi = await getKimiBalance();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ kimi, timestamp: new Date().toISOString() }));
-    } else if (url.pathname === "/cron-status" && req.method === "POST") {
-      // body 읽기
-      let rawBody = "";
-      req.on("data", (chunk) => (rawBody += chunk));
-      req.on("end", async () => {
-        try {
-          const payload = JSON.parse(rawBody);
-          const { job_id, job_name, status, error, duration_ms } = payload;
-          if (!job_id || !status) {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "job_id and status required" }));
-            return;
-          }
-          console.log(`[cron-status] ${job_name || job_id} → ${status}`);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
-        } catch (e) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Invalid JSON" }));
-        }
-      });
-      return; // 비동기 처리이므로 early return
+
+    // --- Cron Jobs API ---
+    } else if (url.pathname === "/cron-jobs" && req.method === "GET") {
+      const jobs = db.prepare("SELECT * FROM cron_jobs ORDER BY job_name").all();
+      // Transform to match bb-todo expected format
+      const formatted = {
+        jobs: jobs.map(j => ({
+          id: j.job_id,
+          name: j.job_name,
+          enabled: j.enabled === 1,
+          schedule: { expr: j.schedule },
+          state: {
+            lastStatus: j.last_status,
+            lastRunAtMs: j.last_run_at ? new Date(j.last_run_at).getTime() : null,
+            lastDurationMs: j.last_duration_ms,
+            consecutiveErrors: j.consecutive_errors,
+            nextRunAtMs: j.next_run_at ? new Date(j.next_run_at).getTime() : null,
+          },
+        })),
+        version: 1,
+        source: "sqlite",
+        polledAt: new Date().toISOString(),
+      };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(formatted));
+
+    } else if (url.pathname === "/cron-runs" && req.method === "GET") {
+      const jobId = url.searchParams.get("jobId");
+      const limit = parseInt(url.searchParams.get("limit") || "50");
+      let rows;
+      if (jobId) {
+        rows = db.prepare("SELECT * FROM cron_runs WHERE job_id = ? ORDER BY ran_at DESC LIMIT ?").all(jobId, limit);
+      } else {
+        rows = db.prepare("SELECT * FROM cron_runs ORDER BY ran_at DESC LIMIT ?").all(limit);
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ runs: rows }));
+
     } else if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
