@@ -52,6 +52,7 @@ db.exec(`
     last_duration_ms INTEGER,
     consecutive_errors INTEGER DEFAULT 0,
     next_run_at TEXT,
+    payload_message TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
@@ -59,12 +60,12 @@ console.log(`✅ SQLite DB ready: ${DB_PATH}`);
 
 // --- Cron Poller (reads jobs.json → SQLite) ---
 const upsertJob = db.prepare(`
-  INSERT INTO cron_jobs (job_id, job_name, schedule, enabled, last_status, last_run_at, last_duration_ms, consecutive_errors, next_run_at, updated_at)
-  VALUES (@job_id, @job_name, @schedule, @enabled, @last_status, @last_run_at, @last_duration_ms, @consecutive_errors, @next_run_at, datetime('now'))
+  INSERT INTO cron_jobs (job_id, job_name, schedule, enabled, last_status, last_run_at, last_duration_ms, consecutive_errors, next_run_at, payload_message, updated_at)
+  VALUES (@job_id, @job_name, @schedule, @enabled, @last_status, @last_run_at, @last_duration_ms, @consecutive_errors, @next_run_at, @payload_message, datetime('now'))
   ON CONFLICT(job_id) DO UPDATE SET
     job_name=@job_name, schedule=@schedule, enabled=@enabled,
     last_status=@last_status, last_run_at=@last_run_at, last_duration_ms=@last_duration_ms,
-    consecutive_errors=@consecutive_errors, next_run_at=@next_run_at, updated_at=datetime('now')
+    consecutive_errors=@consecutive_errors, next_run_at=@next_run_at, payload_message=@payload_message, updated_at=datetime('now')
 `);
 
 const insertRun = db.prepare(`
@@ -102,6 +103,7 @@ function pollCronJobs() {
         last_duration_ms: state.lastDurationMs || null,
         consecutive_errors: state.consecutiveErrors || 0,
         next_run_at: nextRunAt,
+        payload_message: (job.payload && job.payload.message) || null,
       });
 
       // Insert into history only if new run detected
@@ -283,6 +285,7 @@ const server = http.createServer(async (req, res) => {
           name: j.job_name,
           enabled: j.enabled === 1,
           schedule: { expr: j.schedule },
+          payload: j.payload_message ? { kind: "agentTurn", message: j.payload_message } : undefined,
           state: {
             lastStatus: j.last_status,
             lastRunAtMs: j.last_run_at ? new Date(j.last_run_at).getTime() : null,
