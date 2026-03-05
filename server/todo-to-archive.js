@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
- * todo-to-archive.js — Move a completed project section from TODO.md to SQLite archive
- * Usage: node server/todo-to-archive.js --project "KIA 리뉴얼"
- *        node server/todo-to-archive.js --project "KIA 리뉴얼" --dry-run
+ * todo-to-archive.js — Move completed items from TODO.md to SQLite archive
+ * Usage:
+ *   node server/todo-to-archive.js --project "KIA 리뉴얼"                    # 프로젝트 통째로
+ *   node server/todo-to-archive.js --project "KIA 리뉴얼" --completed-only   # [x] 아이템만
+ *   node server/todo-to-archive.js --project "KIA 리뉴얼" --completed-only --dry-run
  */
 
 const fs = require("fs");
@@ -13,21 +15,23 @@ const { execSync } = require("child_process");
 // --- Config ---
 const TODO_PATH = process.env.TODO_PATH || path.join(require("os").homedir(), ".openclaw/workspace/TODO.md");
 const DB_PATH = process.env.CRON_DB_PATH || path.join(__dirname, "cron.db");
-const TODAY = new Date().toISOString().slice(0, 10);
 
 // --- Args ---
 const args = process.argv.slice(2);
 let projectName = null;
 let dryRun = false;
+let completedOnly = false;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--project" && args[i + 1]) projectName = args[++i];
   if (args[i] === "--dry-run") dryRun = true;
+  if (args[i] === "--completed-only") completedOnly = true;
 }
 
 if (!projectName) {
-  console.error('Usage: node server/todo-to-archive.js --project "섹션 제목"');
-  console.error('       node server/todo-to-archive.js --project "섹션 제목" --dry-run');
+  console.error('Usage: node server/todo-to-archive.js --project "프로젝트명"');
+  console.error('       node server/todo-to-archive.js --project "프로젝트명" --completed-only');
+  console.error('       node server/todo-to-archive.js --project "프로젝트명" --completed-only --dry-run');
   process.exit(1);
 }
 
@@ -51,7 +55,6 @@ for (let i = 0; i < lines.length; i++) {
   if (m) {
     const level = m[1].length;
     const title = m[2].replace(/\s*✅.*$/, "").trim();
-    // strip emoji prefix for matching
     const titleNoEmoji = title.replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}]\s*/u, "").trim();
     const searchNoEmoji = projectName.replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}]\s*/u, "").trim();
 
@@ -67,7 +70,7 @@ for (let i = 0; i < lines.length; i++) {
 }
 
 if (sectionStart === -1) {
-  console.error(`❌ Section not found: "${projectName}"`);
+  console.error(`❌ Project not found: "${projectName}"`);
   process.exit(1);
 }
 
@@ -82,40 +85,42 @@ if (emojiMatch) {
   emoji = emojiMatch[1];
   cleanName = emojiMatch[2];
 }
-// Strip priority markers and completion dates
 cleanName = cleanName.replace(/^!(?:1|2)\s+/, "").replace(/\s*\(완료:.*?\)/, "").replace(/\s*✅.*$/, "").trim();
 
-// Parse categories and items
+// Parse categories and items with checked status + line tracking
 const categories = [];
 const uncategorizedItems = [];
 let currentCategory = null;
 
 for (let i = 1; i < sectionLines.length; i++) {
   const line = sectionLines[i];
+  const absLine = sectionStart + i; // absolute line number in TODO.md
 
-  // ### category
   const catMatch = line.match(/^###\s+(.+)$/);
   if (catMatch) {
-    currentCategory = { name: catMatch[1].trim(), items: [] };
+    currentCategory = { name: catMatch[1].trim(), items: [], absLine };
     categories.push(currentCategory);
     continue;
   }
 
-  // - [x] or - [ ] item
   const itemMatch = line.match(/^\s*-\s+\[([ xX])\]\s+(?:★\s+)?(.+)$/);
   if (itemMatch) {
-    const item = { title: itemMatch[2].trim(), content: null };
+    const checked = itemMatch[1].toLowerCase() === "x";
+    const item = { title: itemMatch[2].trim(), content: null, checked, absLine };
     // Look ahead for sub-items
     const subItems = [];
+    const subLines = [];
     let j = i + 1;
     while (j < sectionLines.length) {
       const subMatch = sectionLines[j].match(/^\s{2,}-\s+(.+)$/);
       if (subMatch) {
         subItems.push(subMatch[1].trim());
+        subLines.push(sectionStart + j);
         j++;
       } else break;
     }
     if (subItems.length > 0) item.content = subItems.join("\n");
+    item.subLines = subLines;
 
     if (currentCategory) {
       currentCategory.items.push(item);
@@ -126,22 +131,65 @@ for (let i = 1; i < sectionLines.length; i++) {
   }
 }
 
-const totalItems = uncategorizedItems.length + categories.reduce((a, c) => a + c.items.length, 0);
+// --- Filter based on mode ---
+let toArchive, toKeep;
+
+if (completedOnly) {
+  // Only archive checked items
+  const filterItems = (items) => {
+    const archive = items.filter(i => i.checked);
+    const keep = items.filter(i => !i.checked);
+    return { archive, keep };
+  };
+
+  const uncatFiltered = filterItems(uncategorizedItems);
+  toArchive = {
+    uncategorizedItems: uncatFiltered.archive,
+    categories: categories.map(c => {
+      const f = filterItems(c.items);
+      return { ...c, items: f.archive, keepItems: f.keep };
+    }).filter(c => c.items.length > 0),
+  };
+  toKeep = {
+    uncategorizedItems: uncatFiltered.keep,
+    categories: categories.map(c => {
+      const f = filterItems(c.items);
+      return { ...c, items: f.keep };
+    }),
+  };
+} else {
+  // Archive everything
+  toArchive = { uncategorizedItems, categories };
+  toKeep = { uncategorizedItems: [], categories: [] };
+}
+
+const archiveCount = toArchive.uncategorizedItems.length +
+  toArchive.categories.reduce((a, c) => a + c.items.length, 0);
 
 console.log(`📦 Found: "${cleanName}" (${emoji || "no emoji"})`);
-console.log(`   ${categories.length} categories, ${totalItems} items`);
+if (completedOnly) {
+  const totalItems = uncategorizedItems.length + categories.reduce((a, c) => a + c.items.length, 0);
+  const keepCount = totalItems - archiveCount;
+  console.log(`   ${archiveCount} completed → archive, ${keepCount} remaining`);
+} else {
+  console.log(`   ${categories.length} categories, ${archiveCount} items → archive (전체)`);
+}
 
-if (totalItems === 0) {
-  console.error("❌ No items found in this section. Aborting.");
-  process.exit(1);
+if (archiveCount === 0) {
+  console.log("✅ No completed items to archive.");
+  process.exit(0);
 }
 
 if (dryRun) {
   console.log("\n🔍 Dry run — no changes made.");
-  console.log(`   Would archive ${totalItems} items to SQLite`);
-  console.log(`   Would remove lines ${sectionStart + 1}-${sectionEnd} from TODO.md`);
-  categories.forEach(c => console.log(`   📁 ${c.name}: ${c.items.length} items`));
-  if (uncategorizedItems.length) console.log(`   📄 Uncategorized: ${uncategorizedItems.length} items`);
+  console.log(`   Would archive ${archiveCount} items to SQLite`);
+  toArchive.categories.forEach(c => console.log(`   📁 ${c.name}: ${c.items.length} items`));
+  if (toArchive.uncategorizedItems.length) console.log(`   📄 Uncategorized: ${toArchive.uncategorizedItems.length} items`);
+  if (completedOnly) {
+    const remainCats = toKeep.categories.filter(c => c.items.length > 0);
+    const remainItems = toKeep.uncategorizedItems.length + remainCats.reduce((a, c) => a + c.items.length, 0);
+    console.log(`   📝 ${remainItems} items remain in TODO.md`);
+  }
   process.exit(0);
 }
 
@@ -156,10 +204,14 @@ const insertProject = db.prepare(`
 
 const getProject = db.prepare("SELECT id FROM projects WHERE name = ?");
 
+const getCategory = db.prepare("SELECT id FROM categories WHERE project_id = ? AND name = ?");
+
 const insertCategory = db.prepare(`
   INSERT INTO categories (project_id, name, sort_order)
   VALUES (?, ?, ?)
 `);
+
+const checkDuplicate = db.prepare("SELECT id FROM items WHERE project_id = ? AND title = ?");
 
 const insertItem = db.prepare(`
   INSERT INTO items (project_id, category_id, status, title, content, sort_order)
@@ -171,40 +223,82 @@ const txn = db.transaction(() => {
   const project = getProject.get(cleanName);
   const projectId = project.id;
 
-  let itemOrder = 0;
+  let inserted = 0;
+  let skipped = 0;
+  let itemOrder = db.prepare("SELECT COALESCE(MAX(sort_order), 0) FROM items WHERE project_id = ?").pluck().get(projectId);
 
-  // Uncategorized items first
-  for (const item of uncategorizedItems) {
-    insertItem.run(projectId, null, item.title, item.content, itemOrder++);
+  // Uncategorized items
+  for (const item of toArchive.uncategorizedItems) {
+    const dup = checkDuplicate.get(projectId, item.title);
+    if (dup) { skipped++; continue; }
+    insertItem.run(projectId, null, item.title, item.content, ++itemOrder);
+    inserted++;
   }
 
   // Categories
-  let catOrder = 0;
-  for (const cat of categories) {
-    const result = insertCategory.run(projectId, cat.name, catOrder++);
-    const catId = result.lastInsertRowid;
+  let catOrder = db.prepare("SELECT COALESCE(MAX(sort_order), 0) FROM categories WHERE project_id = ?").pluck().get(projectId);
+  for (const cat of toArchive.categories) {
+    let existing = getCategory.get(projectId, cat.name);
+    let catId;
+    if (existing) {
+      catId = existing.id;
+    } else {
+      const result = insertCategory.run(projectId, cat.name, ++catOrder);
+      catId = result.lastInsertRowid;
+    }
     for (const item of cat.items) {
-      insertItem.run(projectId, catId, item.title, item.content, itemOrder++);
+      const dup = checkDuplicate.get(projectId, item.title);
+      if (dup) { skipped++; continue; }
+      insertItem.run(projectId, catId, item.title, item.content, ++itemOrder);
+      inserted++;
     }
   }
 
-  return itemOrder;
+  return { inserted, skipped };
 });
 
-const inserted = txn();
-console.log(`✅ ${inserted} items archived to SQLite`);
+const { inserted, skipped } = txn();
+console.log(`✅ ${inserted} items archived to SQLite${skipped > 0 ? ` (${skipped} duplicates skipped)` : ""}`);
 
-// --- Remove section from TODO.md ---
-const newLines = [...lines.slice(0, sectionStart), ...lines.slice(sectionEnd)];
-// Clean up triple+ blank lines
-const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
-fs.writeFileSync(TODO_PATH, cleaned);
-console.log(`✅ Section removed from TODO.md (lines ${sectionStart + 1}-${sectionEnd})`);
+// --- Update TODO.md ---
+if (completedOnly) {
+  // Collect line numbers to remove (archived items + their sub-items)
+  const linesToRemove = new Set();
+
+  for (const item of toArchive.uncategorizedItems) {
+    linesToRemove.add(item.absLine);
+    (item.subLines || []).forEach(l => linesToRemove.add(l));
+  }
+
+  for (const cat of toArchive.categories) {
+    for (const item of cat.items) {
+      linesToRemove.add(item.absLine);
+      (item.subLines || []).forEach(l => linesToRemove.add(l));
+    }
+    // If ALL items in original category were checked, remove category header too
+    const origCat = categories.find(c => c.name === cat.name);
+    if (origCat && origCat.items.every(i => i.checked)) {
+      linesToRemove.add(origCat.absLine);
+    }
+  }
+
+  const newLines = lines.filter((_, i) => !linesToRemove.has(i));
+  const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
+  fs.writeFileSync(TODO_PATH, cleaned);
+  console.log(`✅ ${linesToRemove.size} lines removed from TODO.md (project header preserved)`);
+} else {
+  // Remove entire section
+  const newLines = [...lines.slice(0, sectionStart), ...lines.slice(sectionEnd)];
+  const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
+  fs.writeFileSync(TODO_PATH, cleaned);
+  console.log(`✅ Project removed from TODO.md (lines ${sectionStart + 1}-${sectionEnd})`);
+}
 
 // --- Git commit + push ---
+const mode = completedOnly ? "completed items" : "full project";
 try {
   const wsDir = path.dirname(TODO_PATH);
-  execSync(`cd "${wsDir}" && git add TODO.md && git commit -m "🗄️ Archive: ${cleanName}" && git push origin main`, {
+  execSync(`cd "${wsDir}" && git pull --no-rebase origin main && git add TODO.md && git commit -m "🗄️ Archive (${mode}): ${cleanName}" && git push origin main`, {
     stdio: "inherit",
     timeout: 30000,
   });
