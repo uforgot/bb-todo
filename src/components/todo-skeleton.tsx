@@ -4,17 +4,21 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export function TodoSkeleton() {
   return (
-    <div className="space-y-4 p-4 max-w-2xl mx-auto">
-      <Skeleton className="h-8 w-48" />
-      {[1, 2, 3].map((i) => (
-        <div key={i} className="space-y-2">
-          <Skeleton className="h-6 w-40" />
-          <div className="ml-4 space-y-1.5">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-3/4" />
-            <Skeleton className="h-4 w-5/6" />
-          </div>
+    <div className="max-w-2xl mx-auto py-2 px-2">
+      {/* Header skeleton */}
+      <Skeleton className="h-6 w-32 mb-3 mx-1" />
+      {/* Expanded first card */}
+      <div className="rounded-lg border border-border/50 mb-1 p-3">
+        <Skeleton className="h-5 w-48 mb-3" />
+        <div className="space-y-2 ml-1">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-4/5" />
+          <Skeleton className="h-4 w-3/4" />
         </div>
+      </div>
+      {/* Collapsed cards */}
+      {[1, 2, 3, 4].map((i) => (
+        <Skeleton key={i} className="h-11 w-full rounded-lg mb-1" />
       ))}
     </div>
   );
