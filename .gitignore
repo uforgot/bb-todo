@@ -44,3 +44,6 @@ public/sw.js
 public/workbox-*.js
 public/sw.js.map
 public/workbox-*.js.map
+*.db
+*.db-shm
+*.db-wal

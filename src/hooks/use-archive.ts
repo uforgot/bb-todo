@@ -1,10 +1,31 @@
 "use client";
 
 import useSWR from "swr";
-import { parseTodoMd, type TodoSection } from "@/lib/parser";
+
+export interface ArchiveItem {
+  id: number;
+  title: string;
+  status: string;
+  content: string | null;
+}
+
+export interface ArchiveCategory {
+  id: number;
+  name: string;
+  items: ArchiveItem[];
+}
+
+export interface ArchiveProject {
+  id: number;
+  name: string;
+  emoji: string | null;
+  priority: number;
+  categories: ArchiveCategory[];
+  items: ArchiveItem[]; // uncategorized items
+}
 
 interface ArchiveApiResponse {
-  content: string;
+  projects: ArchiveProject[];
 }
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
@@ -20,12 +41,8 @@ export function useArchive() {
     }
   );
 
-  const sections: TodoSection[] = data?.content
-    ? parseTodoMd(data.content)
-    : [];
-
   return {
-    sections,
+    projects: data?.projects ?? [],
     isLoading,
     isError: !!error,
     refresh: async () => { await mutate(); },

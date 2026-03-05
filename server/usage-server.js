@@ -55,6 +55,36 @@ db.exec(`
     payload_message TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    emoji TEXT,
+    priority INTEGER NOT NULL DEFAULT 99,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    name TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    category_id INTEGER REFERENCES categories(id),
+    status TEXT NOT NULL DEFAULT 'todo'
+      CHECK (status IN ('todo', 'in_progress', 'done', 'archived')),
+    title TEXT NOT NULL,
+    content TEXT,
+    sort_order INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 console.log(`✅ SQLite DB ready: ${DB_PATH}`);
 
@@ -312,6 +342,37 @@ const server = http.createServer(async (req, res) => {
       }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ runs: rows }));
+
+    // --- Archive API ---
+    } else if (url.pathname === "/archive" && req.method === "GET") {
+      const projects = db.prepare("SELECT * FROM projects ORDER BY sort_order, id").all();
+      const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order, id").all();
+      const items = db.prepare("SELECT * FROM items ORDER BY sort_order, id").all();
+
+      const result = projects.map(p => {
+        const projCats = categories.filter(c => c.project_id === p.id);
+        const projItems = items.filter(i => i.project_id === p.id);
+
+        return {
+          id: p.id,
+          name: p.name,
+          emoji: p.emoji,
+          priority: p.priority,
+          categories: projCats.map(c => ({
+            id: c.id,
+            name: c.name,
+            items: projItems
+              .filter(i => i.category_id === c.id)
+              .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content })),
+          })),
+          items: projItems
+            .filter(i => i.category_id === null)
+            .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content })),
+        };
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ projects: result }));
 
     } else if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
