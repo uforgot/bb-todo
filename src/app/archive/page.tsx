@@ -4,7 +4,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useArchive, type ArchiveProject, type ArchiveCategory } from "@/hooks/use-archive";
 import { TodoHeader } from "@/components/todo-header";
 import { ArchiveSection } from "@/components/archive-section";
-import { TodoSkeleton } from "@/components/todo-skeleton";
+import { ArchiveSkeleton } from "@/components/archive-skeleton";
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { AlertCircle, Search } from "lucide-react";
 
@@ -86,7 +86,7 @@ export default function ArchivePage() {
     return (
       <>
         <TodoHeader total={0} completed={0} />
-        <TodoSkeleton />
+        <ArchiveSkeleton />
       </>
     );
   }
