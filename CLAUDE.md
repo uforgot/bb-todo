@@ -8,7 +8,8 @@
 - **PWA:** `@ducanh2912/next-pwa`
 - **UI:** shadcn/ui + Radix UI + Tailwind CSS
 - **Data fetching:** SWR
-- **Data source:** GitHub API → `uforgot/bb-samsara` repo의 `TODO.md`, `TODO-archive.md`
+- **Data source (TODO):** GitHub API → `uforgot/bb-samsara` repo의 `TODO.md`
+- **Data source (Archive):** SQLite (`server/cron.db`) → usage-server `/archive` endpoint
 - **Cron data:** `uforgot/bb-samsara` repo의 `backup/cron-jobs.json` (22:00 크론이 자동 업데이트)
 - **Deployment:** Vercel (https://bb-todo-drab.vercel.app)
 
@@ -32,14 +33,15 @@ src/
 │   └── cron/             # 크론 페이지
 ├── components/
 │   ├── todo-section.tsx      # TODO 아코디언 섹션
-│   ├── archive-section.tsx   # 아카이브 섹션
+│   ├── archive-section.tsx   # 아카이브 섹션 (SQLite, 검색+하이라이트)
+│   ├── archive-skeleton.tsx  # 아카이브 로딩 스켈레톤
 │   ├── cron-section.tsx      # 크론잡 상태 카드
 │   ├── bottom-tab-bar.tsx    # 하단 탭 바
 │   ├── pull-to-refresh.tsx   # 당겨서 새로고침
 │   └── todo-item.tsx         # 체크박스 아이템
 ├── hooks/
 │   ├── use-todo.ts       # TODO.md SWR hook
-│   ├── use-archive.ts    # TODO-archive.md SWR hook
+│   ├── use-archive.ts    # Archive SQLite API hook
 │   ├── use-cron.ts       # cron-jobs.json SWR hook (60s 캐시)
 │   ├── use-sync-time.ts  # 마지막 동기화 시간
 │   ├── use-batch-update.ts   # 배치 업데이트
@@ -78,3 +80,46 @@ GITHUB_FILE_PATH=TODO.md
 
 - CronSection은 page.tsx가 아닌 `/cron` 별도 탭 페이지에 있음 (정상)
 - fetchCronJobs()는 github.ts line 137에 존재 (정상)
+
+## Archive DB (SQLite)
+
+아카이브 데이터는 `server/cron.db`의 SQLite 테이블에 저장.
+
+### Schema
+
+```
+projects → categories → items (3-depth)
+```
+
+- `projects` (id, name, emoji, priority, sort_order, created_at)
+- `categories` (id, project_id FK, name, sort_order, created_at)
+- `items` (id, project_id FK, category_id FK nullable, status, title, content, sort_order, updated_at, created_at)
+- `status`: todo | in_progress | done | archived
+
+### Data Flow
+
+```
+TODO.md ──[todo-to-archive.js]──► SQLite (cron.db)
+                                      ↓
+                              usage-server /archive
+                                      ↓
+                              Next.js /api/archive (proxy)
+                                      ↓
+                              archive/page.tsx (SWR)
+```
+
+### Scripts
+
+- `server/migrate-archive.js` — 일회성 마이그레이션 (TODO-archive.md → SQLite). 이미 실행됨.
+- `server/todo-to-archive.js` — TODO.md에서 완료 섹션 → SQLite 직접 INSERT + TODO.md 제거 + git push
+  ```bash
+  node server/todo-to-archive.js --project "섹션 제목"          # 실행
+  node server/todo-to-archive.js --project "섹션 제목" --dry-run # 미리보기
+  ```
+
+### Archive UI Features
+
+- 검색: 상단 input, debounce 300ms, 프론트 필터링 (title.includes)
+- 키워드 하이라이트 (yellow mark)
+- 검색 시 매칭된 프로젝트 자동 펼침
+- 기본 아코디언 접힘
