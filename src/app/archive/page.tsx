@@ -134,7 +134,7 @@ export default function ArchivePage() {
               <ArchiveSection
                 key={project.id}
                 project={project}
-                defaultOpen={hasSearch}
+                defaultOpen={hasSearch} query={hasSearch ? debouncedSearch : undefined}
               />
             ))}
           </div>

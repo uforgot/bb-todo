@@ -1,6 +1,6 @@
 "use client";
 
-import type { ArchiveProject, ArchiveCategory } from "@/hooks/use-archive";
+import type { ArchiveProject, ArchiveCategory, ArchiveItem } from "@/hooks/use-archive";
 import { Card } from "@/components/ui/card";
 import {
   Accordion,
@@ -18,25 +18,50 @@ function ItemCount({ count }: { count: number }) {
   );
 }
 
-function CategoryBlock({ category }: { category: ArchiveCategory }) {
+function HighlightText({ text, query }: { text: string; query?: string }) {
+  if (!query) return <>{text}</>;
+  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+  const parts = text.split(regex);
+  return (
+    <>
+      {parts.map((part, i) =>
+        regex.test(part) ? (
+          <mark key={i} className="bg-yellow-300/60 dark:bg-yellow-500/40 text-inherit rounded-sm px-0.5">
+            {part}
+          </mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
+}
+
+function ItemRow({ item, query }: { item: ArchiveItem; query?: string }) {
+  return (
+    <div className="flex items-center gap-2.5 py-1.5">
+      <span className="size-5 shrink-0 flex items-center justify-center text-xs text-green-500">
+        ✓
+      </span>
+      <span className="text-sm leading-snug text-pretty line-through text-muted-foreground">
+        <HighlightText text={item.title} query={query} />
+      </span>
+    </div>
+  );
+}
+
+function CategoryBlock({ category, query }: { category: ArchiveCategory; query?: string }) {
   return (
     <div className="mt-2 first:mt-0">
       <div className="flex items-center gap-2 pb-1 mb-0.5 border-b border-border/20">
         <span className="text-xs font-semibold text-muted-foreground">
-          {category.name}
+          <HighlightText text={category.name} query={query} />
         </span>
         <ItemCount count={category.items.length} />
       </div>
       <div>
         {category.items.map((item) => (
-          <div key={item.id} className="flex items-center gap-2.5 py-1.5">
-            <span className="size-5 shrink-0 flex items-center justify-center text-xs text-green-500">
-              ✓
-            </span>
-            <span className="text-sm leading-snug text-pretty line-through text-muted-foreground">
-              {item.title}
-            </span>
-          </div>
+          <ItemRow key={item.id} item={item} query={query} />
         ))}
       </div>
     </div>
@@ -46,9 +71,10 @@ function CategoryBlock({ category }: { category: ArchiveCategory }) {
 interface ArchiveSectionProps {
   project: ArchiveProject;
   defaultOpen?: boolean;
+  query?: string;
 }
 
-export function ArchiveSection({ project, defaultOpen = false }: ArchiveSectionProps) {
+export function ArchiveSection({ project, defaultOpen = false, query }: ArchiveSectionProps) {
   const totalItems = project.items.length +
     project.categories.reduce((acc, c) => acc + c.items.length, 0);
 
@@ -59,32 +85,24 @@ export function ArchiveSection({ project, defaultOpen = false }: ArchiveSectionP
           <AccordionTrigger className="px-3 py-1 hover:no-underline hover:bg-accent/20 rounded-lg transition-colors">
             <div className="flex items-center gap-2">
               <span className="text-base font-semibold text-balance">
-                {project.emoji ? `${project.emoji} ` : ""}{project.name}
+                {project.emoji ? `${project.emoji} ` : ""}
+                <HighlightText text={project.name} query={query} />
               </span>
               <ItemCount count={totalItems} />
             </div>
           </AccordionTrigger>
           <AccordionContent className="px-3 pb-1.5">
-            {/* Uncategorized items */}
             {project.items.length > 0 && (
               <div>
                 {project.items.map((item) => (
-                  <div key={item.id} className="flex items-center gap-2.5 py-1.5">
-                    <span className="size-5 shrink-0 flex items-center justify-center text-xs text-green-500">
-                      ✓
-                    </span>
-                    <span className="text-sm leading-snug text-pretty line-through text-muted-foreground">
-                      {item.title}
-                    </span>
-                  </div>
+                  <ItemRow key={item.id} item={item} query={query} />
                 ))}
               </div>
             )}
-            {/* Categories */}
             {project.categories.length > 0 && (
               <div className={project.items.length > 0 ? "mt-1.5" : ""}>
                 {project.categories.map((cat) => (
-                  <CategoryBlock key={cat.id} category={cat} />
+                  <CategoryBlock key={cat.id} category={cat} query={query} />
                 ))}
               </div>
             )}
