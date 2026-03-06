@@ -112,7 +112,7 @@ export function TodoSection({ section, defaultOpen = true, onToggle, onClearDone
                 <button
                   onClick={handleClearDone}
                   disabled={isClearing || isFlushing}
-                  className="mt-3 w-full py-1.5 text-xs text-muted-foreground hover:text-foreground border border-dashed border-border/50 hover:border-border rounded-md transition-colors disabled:opacity-40"
+                  className="mt-3 py-1 px-3 text-xs text-muted-foreground hover:text-foreground border border-dashed border-border/50 hover:border-border rounded-md transition-colors disabled:opacity-40"
                 >
                   {isClearing ? "Clearing..." : `Clear done (${completed})`}
                 </button>
