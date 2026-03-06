@@ -424,7 +424,27 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Remove [x] lines from TODO.md
-      const newLines = lines.filter((_, i) => !linesToRemove.has(i));
+      let newLines = lines.filter((_, i) => !linesToRemove.has(i));
+
+      // Remove empty subsections (### headings with no items left)
+      const cleanedLines = [];
+      for (let i = 0; i < newLines.length; i++) {
+        const hm = newLines[i].match(/^(#{3,6})\s+/);
+        if (hm) {
+          // Check if next non-empty line is another heading of same/higher level or end
+          let hasItems = false;
+          for (let j = i + 1; j < newLines.length; j++) {
+            const trimmed = newLines[j].trim();
+            if (!trimmed) continue;
+            if (trimmed.match(/^#{1,6}\s+/)) break;
+            hasItems = true;
+            break;
+          }
+          if (!hasItems) continue; // skip empty subsection
+        }
+        cleanedLines.push(newLines[i]);
+      }
+      newLines = cleanedLines;
       fs.writeFileSync(todoPath, newLines.join("\n"), "utf-8");
 
       // Git commit + push
