@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useCallback } from "react";
 import { useTodo } from "@/hooks/use-todo";
 import { countItems, type TodoItem as TodoItemType, type TodoSection as TodoSectionType } from "@/lib/parser";
 import { TodoHeader } from "@/components/todo-header";
@@ -43,6 +43,31 @@ export default function Home() {
       requestPermission().then(() => checkDeadlines(sections));
     }
   }, [sections, requestPermission, checkDeadlines]);
+
+  const clearDone = useCallback(async (project: string) => {
+    try {
+      const res = await fetch("/api/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to clear done items");
+      }
+
+      const data = await res.json();
+      if (data.count === 0) {
+        return;
+      }
+
+      // Refresh todo list after clearing
+      await refresh();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : "Failed to clear done items");
+    }
+  }, [refresh, showError]);
 
   if (isLoading) {
     return (
@@ -117,6 +142,7 @@ export default function Home() {
                 section={section}
                 defaultOpen={idx < 3}
                 onToggle={toggle}
+                onClearDone={clearDone}
                 isFlushing={isFlushing}
                 todayLines={todayLines}
               />

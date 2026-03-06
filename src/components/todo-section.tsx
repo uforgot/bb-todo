@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Accordion,
   AccordionContent,
@@ -14,6 +15,7 @@ interface TodoSectionProps {
   section: TodoSectionType;
   defaultOpen?: boolean;
   onToggle?: (lineIndex: number, checked: boolean) => void;
+  onClearDone?: (project: string) => Promise<void>;
   isFlushing?: boolean;
   todayLines?: Set<number>;
 }
@@ -53,15 +55,26 @@ function ChildSection({ section, onToggle, isFlushing, todayLines }: { section: 
 }
 
 /* 대구분 (##) — Card + Accordion */
-export function TodoSection({ section, defaultOpen = true, onToggle, isFlushing, todayLines }: TodoSectionProps) {
+export function TodoSection({ section, defaultOpen = true, onToggle, onClearDone, isFlushing, todayLines }: TodoSectionProps) {
   const { total, completed } = countItems([section]);
   const allDone = total > 0 && completed === total;
+  const [isClearing, setIsClearing] = useState(false);
 
   const priorityBorder = !allDone && section.priority === '!1'
     ? "border-l-4 border-l-[#EF4444]"
     : !allDone && section.priority === '!2'
     ? "border-l-4 border-l-[#F97316]"
     : "";
+
+  const handleClearDone = async () => {
+    if (!onClearDone || isClearing) return;
+    setIsClearing(true);
+    try {
+      await onClearDone(section.title);
+    } finally {
+      setIsClearing(false);
+    }
+  };
 
   return (
     <Card className={`border shadow-none rounded-lg mb-1 ${allDone ? "border-border/30 opacity-60" : "border-border/50"} ${priorityBorder}`}>
@@ -94,6 +107,15 @@ export function TodoSection({ section, defaultOpen = true, onToggle, isFlushing,
                     <ChildSection key={idx} section={child} onToggle={onToggle} isFlushing={isFlushing} todayLines={todayLines} />
                   ))}
                 </div>
+              )}
+              {completed > 0 && onClearDone && (
+                <button
+                  onClick={handleClearDone}
+                  disabled={isClearing || isFlushing}
+                  className="mt-3 w-full py-1.5 text-xs text-muted-foreground hover:text-foreground border border-dashed border-border/50 hover:border-border rounded-md transition-colors disabled:opacity-40"
+                >
+                  {isClearing ? "Clearing..." : `Clear done (${completed})`}
+                </button>
               )}
             </CardContent>
           </AccordionContent>

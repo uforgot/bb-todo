@@ -70,7 +70,8 @@ db.exec(`
     project_id INTEGER NOT NULL REFERENCES projects(id),
     name TEXT NOT NULL,
     sort_order INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(project_id, name)
   );
 
   CREATE TABLE IF NOT EXISTS items (
@@ -343,7 +344,139 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ runs: rows }));
 
-    // --- Archive API ---
+
+    // --- Archive API: Clear done ---
+    } else if (url.pathname === "/archive" && req.method === "POST") {
+      const body = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", c => data += c);
+        req.on("end", () => resolve(data));
+        req.on("error", reject);
+      });
+
+      const { project } = JSON.parse(body);
+      if (!project) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "project name required" }));
+        return;
+      }
+
+      const WORKSPACE = process.env.WORKSPACE_PATH || path.join(require("os").homedir(), ".openclaw/workspace");
+      const todoPath = path.join(WORKSPACE, "TODO.md");
+
+      if (!fs.existsSync(todoPath)) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "TODO.md not found" }));
+        return;
+      }
+
+      const todoContent = fs.readFileSync(todoPath, "utf-8");
+      const lines = todoContent.split("\n");
+
+      let inProject = false;
+      let projectLevel = 0;
+      let currentCategory = null;
+      const removedItems = [];
+      const linesToRemove = new Set();
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const headingMatch = line.match(/^(#{1,6})\s+(?:(?:!1|!2)\s+)?(.+)$/);
+
+        if (headingMatch) {
+          const level = headingMatch[1].length;
+          const title = headingMatch[2].trim();
+
+          if (inProject && level <= projectLevel) {
+            break;
+          }
+
+          if (!inProject && title === project) {
+            inProject = true;
+            projectLevel = level;
+            continue;
+          }
+
+          if (inProject && level > projectLevel) {
+            currentCategory = title;
+          }
+          continue;
+        }
+
+        if (inProject) {
+          const checkboxMatch = line.match(/^[\s]*-\s+\[([xX])\]\s+(?:★\s+)?(.+)$/);
+          if (checkboxMatch) {
+            removedItems.push({ title: checkboxMatch[2].trim(), category: currentCategory });
+            linesToRemove.add(i);
+            let j = i + 1;
+            while (j < lines.length && lines[j].match(/^\s{2,}-\s+/)) {
+              linesToRemove.add(j);
+              j++;
+            }
+          }
+        }
+      }
+
+      if (removedItems.length === 0) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ removed: [], count: 0 }));
+        return;
+      }
+
+      // Remove [x] lines from TODO.md
+      const newLines = lines.filter((_, i) => !linesToRemove.has(i));
+      fs.writeFileSync(todoPath, newLines.join("\n"), "utf-8");
+
+      // Git commit + push
+      try {
+        execSync(
+          `cd "${WORKSPACE}" && git add TODO.md && git commit -m "🗑 Clear done: ${project}" && git push origin main`,
+          { timeout: 30000, stdio: "pipe" }
+        );
+      } catch (gitErr) {
+        console.error("[archive] git push error:", gitErr.message);
+      }
+
+      // Archive to SQLite
+      try {
+        const emojiMatch = project.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F?)\s*(.+)$/u);
+        const projEmoji = emojiMatch ? emojiMatch[1] : null;
+        const projName = emojiMatch ? emojiMatch[2].trim() : project;
+
+        const upsertProj = db.prepare(
+          `INSERT INTO projects (name, emoji, priority, sort_order)
+           VALUES (?, ?, 99, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
+           ON CONFLICT(name) DO UPDATE SET emoji=excluded.emoji
+           RETURNING id`
+        );
+        const projRow = upsertProj.get(projName, projEmoji);
+        const projectId = projRow.id;
+
+        for (const item of removedItems) {
+          let categoryId = null;
+          if (item.category) {
+            db.prepare(
+              `INSERT INTO categories (project_id, name, sort_order)
+               VALUES (?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories WHERE project_id=?))
+               ON CONFLICT(project_id, name) DO NOTHING`
+            ).run(projectId, item.category, projectId);
+            const catRow = db.prepare("SELECT id FROM categories WHERE project_id=? AND name=?").get(projectId, item.category);
+            categoryId = catRow?.id || null;
+          }
+
+          db.prepare(
+            `INSERT INTO items (project_id, category_id, status, title, sort_order)
+             VALUES (?, ?, 'archived', ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM items WHERE project_id=?))`
+          ).run(projectId, categoryId, item.title, projectId);
+        }
+      } catch (sqlErr) {
+        console.error("[archive] SQLite error:", sqlErr.message);
+      }
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ removed: removedItems, count: removedItems.length }));
+
+    // --- Archive API: List ---
     } else if (url.pathname === "/archive" && req.method === "GET") {
       const projects = db.prepare("SELECT * FROM projects ORDER BY sort_order, id").all();
       const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order, id").all();
