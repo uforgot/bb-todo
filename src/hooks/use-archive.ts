@@ -7,6 +7,7 @@ export interface ArchiveItem {
   title: string;
   status: string;
   content: string | null;
+  archivedAt: string | null;
 }
 
 export interface ArchiveCategory {

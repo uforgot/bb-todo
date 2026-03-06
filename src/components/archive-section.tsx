@@ -37,15 +37,28 @@ function HighlightText({ text, query }: { text: string; query?: string }) {
   );
 }
 
+function formatDate(dateStr?: string | null) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr + "Z");
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  return `${m}/${day}`;
+}
+
 function ItemRow({ item, query }: { item: ArchiveItem; query?: string }) {
   return (
     <div className="flex items-center gap-2.5 py-1.5">
       <span className="size-5 shrink-0 flex items-center justify-center text-xs text-green-500">
         ✓
       </span>
-      <span className="text-sm leading-snug text-pretty line-through text-muted-foreground">
+      <span className="flex-1 text-sm leading-snug text-pretty line-through text-muted-foreground">
         <HighlightText text={item.title} query={query} />
       </span>
+      {item.archivedAt && (
+        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
+          {formatDate(item.archivedAt)}
+        </span>
+      )}
     </div>
   );
 }

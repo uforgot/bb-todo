@@ -498,7 +498,7 @@ const server = http.createServer(async (req, res) => {
 
     // --- Archive API: List ---
     } else if (url.pathname === "/archive" && req.method === "GET") {
-      const projects = db.prepare("SELECT * FROM projects ORDER BY sort_order, id").all();
+      const projects = db.prepare("SELECT * FROM projects ORDER BY id DESC").all();
       const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order, id").all();
       const items = db.prepare("SELECT * FROM items ORDER BY sort_order, id").all();
 
@@ -516,11 +516,11 @@ const server = http.createServer(async (req, res) => {
             name: c.name,
             items: projItems
               .filter(i => i.category_id === c.id)
-              .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content })),
+              .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content, archivedAt: i.created_at })),
           })),
           items: projItems
             .filter(i => i.category_id === null)
-            .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content })),
+            .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content, archivedAt: i.created_at })),
         };
       });
 
