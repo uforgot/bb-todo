@@ -97,14 +97,14 @@ export function TodoSection({ section, defaultOpen = true, onToggle, onClearDone
               {section.items.length > 0 && (
                 <div>
                   {section.items.map((item, idx) => (
-                    <TodoItem key={idx} item={item} onToggle={onToggle} disabled={isFlushing} dimmed={todayLines?.has(item.line)} />
+                    <TodoItem key={idx} item={item} onToggle={onToggle} disabled={isFlushing || isClearing} dimmed={todayLines?.has(item.line)} />
                   ))}
                 </div>
               )}
               {section.children.length > 0 && (
                 <div className={section.items.length > 0 ? "mt-1.5" : ""}>
                   {section.children.map((child, idx) => (
-                    <ChildSection key={idx} section={child} onToggle={onToggle} isFlushing={isFlushing} todayLines={todayLines} />
+                    <ChildSection key={idx} section={child} onToggle={onToggle} isFlushing={isFlushing || isClearing} todayLines={todayLines} />
                   ))}
                 </div>
               )}
