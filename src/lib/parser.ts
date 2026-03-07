@@ -74,18 +74,47 @@ export function parseTodoMd(content: string): TodoSection[] {
 
 export function applyToggles(
   rawContent: string,
-  toggles: Map<number, boolean>
+  toggles: Map<number, boolean>,
+  toggleTexts?: Map<number, string>
 ): string {
   const lines = rawContent.split("\n");
 
   for (const [lineIndex, checked] of toggles) {
-    if (lineIndex < 0 || lineIndex >= lines.length) continue;
-    const line = lines[lineIndex];
-    // Replace [ ] with [x] or [x]/[X] with [ ]
+    const expectedText = toggleTexts?.get(lineIndex);
+    let targetLine = lineIndex;
+
+    if (expectedText) {
+      // Verify line index still points to the right item
+      if (targetLine < 0 || targetLine >= lines.length || !lines[targetLine].includes(expectedText)) {
+        // Line shifted — search for the text in nearby lines first, then full scan
+        targetLine = -1;
+        const searchRange = 20;
+        const start = Math.max(0, lineIndex - searchRange);
+        const end = Math.min(lines.length, lineIndex + searchRange);
+        for (let i = start; i < end; i++) {
+          if (lines[i].includes(expectedText) && /^[\s]*-\s+\[([ xX])\]/.test(lines[i])) {
+            targetLine = i;
+            break;
+          }
+        }
+        // Full scan fallback
+        if (targetLine === -1) {
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes(expectedText) && /^[\s]*-\s+\[([ xX])\]/.test(lines[i])) {
+              targetLine = i;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (targetLine < 0 || targetLine >= lines.length) continue;
+    const line = lines[targetLine];
     if (checked) {
-      lines[lineIndex] = line.replace(/\[([ ])\]/, "[x]");
+      lines[targetLine] = line.replace(/\[([ ])\]/, "[x]");
     } else {
-      lines[lineIndex] = line.replace(/\[([xX])\]/, "[ ]");
+      lines[targetLine] = line.replace(/\[([xX])\]/, "[ ]");
     }
   }
 

@@ -7,7 +7,7 @@ import type { TodoItem as TodoItemType } from "@/lib/parser";
 
 interface TodoItemProps {
   item: TodoItemType;
-  onToggle?: (lineIndex: number, checked: boolean) => void;
+  onToggle?: (lineIndex: number, checked: boolean, text?: string) => void;
   disabled?: boolean;
   dimmed?: boolean;
   sectionLabel?: string;
@@ -29,7 +29,7 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFir
       <div className="flex items-center gap-2.5">
         <Checkbox
           checked={item.checked}
-          onCheckedChange={(checked) => onToggle?.(item.line, !!checked)}
+          onCheckedChange={(checked) => onToggle?.(item.line, !!checked, item.text)}
           disabled={disabled}
           className="shrink-0 size-5"
         />

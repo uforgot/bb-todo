@@ -5,7 +5,7 @@ import { useCallback, useRef, useState } from "react";
 interface BatchUpdateOptions {
   /** Debounce window in ms (default: 3000) */
   debounceMs?: number;
-  onFlush: (toggles: Map<number, boolean>, sha: string) => Promise<void>;
+  onFlush: (toggles: Map<number, boolean>, sha: string, texts: Map<number, string>) => Promise<void>;
   getSha: () => string;
 }
 
@@ -15,6 +15,7 @@ export function useBatchUpdate({
   getSha,
 }: BatchUpdateOptions) {
   const pendingRef = useRef<Map<number, boolean>>(new Map());
+  const textsRef = useRef<Map<number, string>>(new Map());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushingRef = useRef(false);
   const [isFlushing, setIsFlushing] = useState(false);
@@ -25,10 +26,12 @@ export function useBatchUpdate({
     flushingRef.current = true;
     setIsFlushing(true);
     const toggles = new Map(pendingRef.current);
+    const texts = new Map(textsRef.current);
     pendingRef.current.clear();
+    textsRef.current.clear();
 
     try {
-      await onFlush(toggles, getSha());
+      await onFlush(toggles, getSha(), texts);
     } catch (err) {
       // Re-add failed toggles back to pending for next flush
       for (const [line, checked] of toggles) {
@@ -44,8 +47,9 @@ export function useBatchUpdate({
   }, [onFlush, getSha]);
 
   const queue = useCallback(
-    (lineIndex: number, checked: boolean) => {
+    (lineIndex: number, checked: boolean, text?: string) => {
       pendingRef.current.set(lineIndex, checked);
+      if (text) textsRef.current.set(lineIndex, text);
 
       if (timerRef.current) {
         clearTimeout(timerRef.current);

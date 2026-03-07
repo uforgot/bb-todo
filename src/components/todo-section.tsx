@@ -14,7 +14,7 @@ import { countItems, type TodoSection as TodoSectionType } from "@/lib/parser";
 interface TodoSectionProps {
   section: TodoSectionType;
   defaultOpen?: boolean;
-  onToggle?: (lineIndex: number, checked: boolean) => void;
+  onToggle?: (lineIndex: number, checked: boolean, text?: string) => void;
   onClearDone?: (project: string) => Promise<void>;
   isFlushing?: boolean;
   todayLines?: Set<number>;
@@ -31,7 +31,7 @@ function CompletionCount({ completed, total }: { completed: number; total: numbe
 }
 
 /* 소구분 (###) — Things식 Heading */
-function ChildSection({ section, onToggle, isFlushing, todayLines }: { section: TodoSectionType; onToggle?: (lineIndex: number, checked: boolean) => void; isFlushing?: boolean; todayLines?: Set<number> }) {
+function ChildSection({ section, onToggle, isFlushing, todayLines }: { section: TodoSectionType; onToggle?: (lineIndex: number, checked: boolean, text?: string) => void; isFlushing?: boolean; todayLines?: Set<number> }) {
   const { total, completed } = countItems([section]);
 
   return (

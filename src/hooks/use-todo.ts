@@ -33,13 +33,14 @@ export function useTodo(onError?: (message: string) => void) {
   const getSha = useCallback(() => shaRef.current, []);
 
   const onFlush = useCallback(
-    async (toggles: Map<number, boolean>, sha: string) => {
+    async (toggles: Map<number, boolean>, sha: string, texts?: Map<number, string>) => {
       const res = await fetch("/api/todo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sha,
           toggles: Array.from(toggles.entries()),
+          toggleTexts: texts ? Array.from(texts.entries()) : undefined,
         }),
       });
 
@@ -58,12 +59,12 @@ export function useTodo(onError?: (message: string) => void) {
 
   const { queue, flush, isFlushing } = useBatchUpdate({
     debounceMs: 3000,
-    onFlush: async (toggles, sha) => {
+    onFlush: async (toggles, sha, texts) => {
       // Snapshot for rollback
       const snapshot = data ? { ...data } : null;
 
       try {
-        await onFlush(toggles, sha);
+        await onFlush(toggles, sha, texts);
       } catch (err) {
         // Rollback: restore snapshot
         if (snapshot) {
@@ -77,7 +78,7 @@ export function useTodo(onError?: (message: string) => void) {
   });
 
   const toggle = useCallback(
-    (lineIndex: number, checked: boolean) => {
+    (lineIndex: number, checked: boolean, text?: string) => {
       // Optimistic UI: update SWR cache immediately
       if (data) {
         const updatedContent = applyToggles(
@@ -87,8 +88,8 @@ export function useTodo(onError?: (message: string) => void) {
         mutate({ ...data, content: updatedContent }, false);
       }
 
-      // Queue for batched server update
-      queue(lineIndex, checked);
+      // Queue for batched server update (with text for safe matching)
+      queue(lineIndex, checked, text);
     },
     [data, mutate, queue]
   );

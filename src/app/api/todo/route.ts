@@ -20,6 +20,7 @@ export async function GET() {
 interface TogglePayload {
   sha: string;
   toggles: [number, boolean][]; // [lineIndex, checked][]
+  toggleTexts?: [number, string][]; // [lineIndex, text][] for text-based matching
 }
 
 const MAX_RETRIES = 3;
@@ -27,7 +28,7 @@ const MAX_RETRIES = 3;
 export async function POST(request: Request) {
   try {
     const body: TogglePayload = await request.json();
-    const { toggles } = body;
+    const { toggles, toggleTexts: toggleTextsArr } = body;
     let { sha } = body;
 
     if (!sha || !toggles || !Array.isArray(toggles) || toggles.length === 0) {
@@ -38,6 +39,7 @@ export async function POST(request: Request) {
     }
 
     const toggleMap = new Map<number, boolean>(toggles);
+    const toggleTexts = toggleTextsArr ? new Map<number, string>(toggleTextsArr) : undefined;
 
     // Retry loop with exponential backoff on conflict
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -55,7 +57,7 @@ export async function POST(request: Request) {
           sha = current.sha;
         }
 
-        const updatedContent = applyToggles(current.content, toggleMap);
+        const updatedContent = applyToggles(current.content, toggleMap, toggleTexts);
 
         // No changes needed
         if (updatedContent === current.content) {
