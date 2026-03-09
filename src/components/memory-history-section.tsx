@@ -1,11 +1,14 @@
 "use client";
 
 import { useMemoryHistory } from "@/hooks/use-memory-history";
+import { useFileContent } from "@/hooks/use-file-content";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExternalLink } from "lucide-react";
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import ReactMarkdown from "react-markdown";
 
 const FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md", "TOOLS.md"] as const;
+type ViewMode = "content" | "diff";
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
@@ -35,7 +38,95 @@ function DiffLine({ line, type }: { line: string; type: "add" | "del" }) {
   );
 }
 
-function FileSection({ repo, file }: { repo: string; file: string }) {
+/* ── h2 accordion section for content view ── */
+interface MdSection {
+  heading: string;
+  body: string;
+}
+
+function splitByH2(markdown: string): { intro: string; sections: MdSection[] } {
+  const lines = markdown.split("\n");
+  let intro = "";
+  const sections: MdSection[] = [];
+  let current: MdSection | null = null;
+
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      if (current) sections.push(current);
+      current = { heading: line.replace(/^## /, ""), body: "" };
+    } else if (current) {
+      current.body += line + "\n";
+    } else {
+      intro += line + "\n";
+    }
+  }
+  if (current) sections.push(current);
+
+  return { intro: intro.trimEnd(), sections };
+}
+
+function AccordionMdSection({ section }: { section: MdSection }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="border border-border/50 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-muted/30 transition-colors"
+      >
+        <span className="text-sm font-semibold">{section.heading}</span>
+        <span className="text-xs text-muted-foreground">{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 border-t border-border/30">
+          <div className="md-content prose-sm">
+            <ReactMarkdown>{section.body}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Content view (본문) ── */
+function ContentView({ repo, file }: { repo: string; file: string }) {
+  const { content, isLoading, isError } = useFileContent(repo, file);
+  const parsed = useMemo(() => (content ? splitByH2(content) : null), [content]);
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2 mb-4">
+        {[1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-10 w-full rounded-lg" />
+        ))}
+      </div>
+    );
+  }
+
+  if (isError || !parsed) {
+    return (
+      <p className="text-xs text-muted-foreground text-center py-4 mb-4">
+        불러올 수 없습니다
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5 mb-4">
+      {parsed.intro && (
+        <div className="md-content prose-sm px-1">
+          <ReactMarkdown>{parsed.intro}</ReactMarkdown>
+        </div>
+      )}
+      {parsed.sections.map((s, i) => (
+        <AccordionMdSection key={i} section={s} />
+      ))}
+    </div>
+  );
+}
+
+/* ── Diff view (변경 이력) ── */
+function DiffView({ repo, file }: { repo: string; file: string }) {
   const { versions, isLoading, isError } = useMemoryHistory(repo, file);
   const [openSha, setOpenSha] = useState<string | null>(null);
 
@@ -111,6 +202,7 @@ const GITHUB_BASE = "https://github.com/uforgot";
 
 export function MemoryHistorySection({ repo }: { repo: string }) {
   const [activeFile, setActiveFile] = useState<string>("MEMORY.md");
+  const [viewMode, setViewMode] = useState<ViewMode>("content");
   const githubUrl = `${GITHUB_BASE}/${repo}/blob/main/${activeFile}`;
 
   return (
@@ -129,7 +221,7 @@ export function MemoryHistorySection({ repo }: { repo: string }) {
       </div>
 
       {/* File tabs */}
-      <div className="flex gap-1 mb-3">
+      <div className="flex gap-1 mb-2">
         {FILES.map((file) => (
           <button
             key={file}
@@ -145,7 +237,35 @@ export function MemoryHistorySection({ repo }: { repo: string }) {
         ))}
       </div>
 
-      <FileSection repo={repo} file={activeFile} />
+      {/* View mode toggle */}
+      <div className="flex gap-1 mb-3">
+        <button
+          onClick={() => setViewMode("content")}
+          className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
+            viewMode === "content"
+              ? "bg-foreground text-background font-medium"
+              : "bg-muted/50 text-muted-foreground hover:bg-muted"
+          }`}
+        >
+          본문
+        </button>
+        <button
+          onClick={() => setViewMode("diff")}
+          className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
+            viewMode === "diff"
+              ? "bg-foreground text-background font-medium"
+              : "bg-muted/50 text-muted-foreground hover:bg-muted"
+          }`}
+        >
+          변경
+        </button>
+      </div>
+
+      {viewMode === "content" ? (
+        <ContentView repo={repo} file={activeFile} />
+      ) : (
+        <DiffView repo={repo} file={activeFile} />
+      )}
     </div>
   );
 }

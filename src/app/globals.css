@@ -124,3 +124,109 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Markdown content styles for memory file viewer */
+.md-content {
+  color: var(--foreground);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+}
+.md-content h1 {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.25rem;
+}
+.md-content h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-top: 1rem;
+  margin-bottom: 0.375rem;
+}
+.md-content h3 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+.md-content p {
+  margin-bottom: 0.5rem;
+}
+.md-content ul,
+.md-content ol {
+  padding-left: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+.md-content ul {
+  list-style-type: disc;
+}
+.md-content ol {
+  list-style-type: decimal;
+}
+.md-content li {
+  margin-bottom: 0.125rem;
+}
+.md-content li > ul,
+.md-content li > ol {
+  margin-top: 0.125rem;
+  margin-bottom: 0;
+}
+.md-content code {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.3rem;
+  border-radius: 0.25rem;
+  background: var(--muted);
+  color: var(--foreground);
+}
+.md-content pre {
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 0.375rem;
+  overflow-x: auto;
+  background: var(--muted);
+}
+.md-content pre code {
+  padding: 0;
+  background: transparent;
+}
+.md-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 0.75rem;
+  font-size: 0.75rem;
+  display: block;
+  overflow-x: auto;
+}
+.md-content th,
+.md-content td {
+  border: 1px solid var(--border);
+  padding: 0.375rem 0.5rem;
+  text-align: left;
+}
+.md-content th {
+  font-weight: 600;
+  background: var(--muted);
+}
+.md-content blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.75rem;
+  margin-bottom: 0.5rem;
+  color: var(--muted-foreground);
+}
+.md-content hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.75rem 0;
+}
+.md-content a {
+  color: oklch(0.623 0.214 259.815);
+  text-decoration: underline;
+}
+.dark .md-content a {
+  color: oklch(0.707 0.165 254.624);
+}
+.md-content strong {
+  font-weight: 600;
+}
