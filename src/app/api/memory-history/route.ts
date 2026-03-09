@@ -2,7 +2,7 @@ import { fetchMemoryHistory } from "@/lib/memory";
 import { NextRequest } from "next/server";
 
 const ALLOWED_REPOS = ["bb-samsara", "pp-samsara"];
-const ALLOWED_FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md"];
+const ALLOWED_FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md", "TOOLS.md"];
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
