@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ExternalLink } from "lucide-react";
 import { useState, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const mdComponents = {
   table: ({ children, ...props }: React.ComponentPropsWithoutRef<"table">) => (
@@ -88,7 +89,7 @@ function AccordionMdSection({ section }: { section: MdSection }) {
       {open && (
         <div className="px-3 pb-3 border-t border-border/30">
           <div className="md-content prose-sm">
-            <ReactMarkdown components={mdComponents}>{section.body}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{section.body}</ReactMarkdown>
           </div>
         </div>
       )}
@@ -123,7 +124,7 @@ function ContentView({ repo, file }: { repo: string; file: string }) {
     <div className="space-y-1.5 mb-4">
       {parsed.intro && (
         <div className="md-content prose-sm px-1">
-          <ReactMarkdown components={mdComponents}>{parsed.intro}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{parsed.intro}</ReactMarkdown>
         </div>
       )}
       {parsed.sections.map((s, i) => (
