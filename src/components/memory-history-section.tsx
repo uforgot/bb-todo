@@ -208,24 +208,26 @@ function DiffView({ repo, file }: { repo: string; file: string }) {
 }
 
 
+function getInitialFile(): string {
+  if (typeof window === "undefined") return "MEMORY.md";
+  const params = new URLSearchParams(window.location.search);
+  const file = params.get("file");
+  if (file && FILES.includes(file as typeof FILES[number])) return file;
+  return "MEMORY.md";
+}
+
+function getInitialMode(): ViewMode {
+  if (typeof window === "undefined") return "content";
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get("mode");
+  if (mode === "content" || mode === "diff") return mode;
+  return "content";
+}
+
 export function MemoryHistorySection({ repo }: { repo: string }) {
   const isEmbedded = useEmbedded();
-  const [activeFile, setActiveFile] = useState<string>("MEMORY.md");
-  const [viewMode, setViewMode] = useState<ViewMode>("content");
-
-  // embedded 모드: URL 쿼리에서 file/mode 수신
-  useEffect(() => {
-    if (!isEmbedded) return;
-    const params = new URLSearchParams(window.location.search);
-    const file = params.get("file");
-    const mode = params.get("mode");
-    if (file && FILES.includes(file as typeof FILES[number])) {
-      setActiveFile(file);
-    }
-    if (mode === "content" || mode === "diff") {
-      setViewMode(mode);
-    }
-  }, [isEmbedded]);
+  const [activeFile, setActiveFile] = useState<string>(getInitialFile);
+  const [viewMode, setViewMode] = useState<ViewMode>(getInitialMode);
 
   // embedded 모드: postMessage로 실시간 변경 수신
   useEffect(() => {
