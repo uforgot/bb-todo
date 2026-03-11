@@ -3,6 +3,7 @@ import { Geist } from "next/font/google";
 import { ToastProvider } from "@/components/ui/toast";
 import { ThemeProvider } from "@/components/theme-provider";
 import { BottomTabBar } from "@/components/bottom-tab-bar";
+import { EmbeddedProvider } from "@/components/embedded-provider";
 import "./globals.css";
 
 const geist = Geist({ subsets: ["latin"] });
@@ -36,10 +37,12 @@ export default function RootLayout({
       <body className={`${geist.className} antialiased`}>
         <ThemeProvider>
           <ToastProvider>
-            <div className="flex flex-col h-[100dvh]">
-              <main className="flex-1 overflow-y-auto">{children}</main>
-              <BottomTabBar />
-            </div>
+            <EmbeddedProvider>
+              <div className="flex flex-col h-[100dvh]">
+                <main className="flex-1 overflow-y-auto">{children}</main>
+                <BottomTabBar />
+              </div>
+            </EmbeddedProvider>
           </ToastProvider>
         </ThemeProvider>
       </body>

@@ -4,11 +4,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ListTodo, Archive, Timer, Activity, Brain, Sparkles } from "lucide-react";
 import { useCron } from "@/hooks/use-cron";
+import { useEmbedded } from "@/components/embedded-provider";
 
 export function BottomTabBar() {
   const pathname = usePathname();
+  const isEmbedded = useEmbedded();
   const { jobs } = useCron();
   const hasCronError = jobs.some((job) => (job.state?.consecutiveErrors ?? 0) > 0);
+
+  if (isEmbedded) return null;
 
   return (
     <nav className="shrink-0 bg-background border-t" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
