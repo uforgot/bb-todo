@@ -3,7 +3,8 @@
 import { useMemoryHistory } from "@/hooks/use-memory-history";
 import { useFileContent } from "@/hooks/use-file-content";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useEmbedded } from "@/components/embedded-provider";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -208,51 +209,85 @@ function DiffView({ repo, file }: { repo: string; file: string }) {
 
 
 export function MemoryHistorySection({ repo }: { repo: string }) {
+  const isEmbedded = useEmbedded();
   const [activeFile, setActiveFile] = useState<string>("MEMORY.md");
   const [viewMode, setViewMode] = useState<ViewMode>("content");
 
+  // embedded 모드: URL 쿼리에서 file/mode 수신
+  useEffect(() => {
+    if (!isEmbedded) return;
+    const params = new URLSearchParams(window.location.search);
+    const file = params.get("file");
+    const mode = params.get("mode");
+    if (file && FILES.includes(file as typeof FILES[number])) {
+      setActiveFile(file);
+    }
+    if (mode === "content" || mode === "diff") {
+      setViewMode(mode);
+    }
+  }, [isEmbedded]);
+
+  // embedded 모드: postMessage로 실시간 변경 수신
+  useEffect(() => {
+    if (!isEmbedded) return;
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === "setFile" && FILES.includes(e.data.file)) {
+        setActiveFile(e.data.file);
+      }
+      if (e.data?.type === "setMode" && (e.data.mode === "content" || e.data.mode === "diff")) {
+        setViewMode(e.data.mode);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [isEmbedded]);
+
   return (
     <div className="max-w-2xl mx-auto py-2 px-2">
-      {/* File tabs */}
-      <div className="flex gap-1 mb-2">
-        {FILES.map((file) => (
+      {/* File tabs — embedded 모드에서 숨김 */}
+      {!isEmbedded && (
+        <div className="flex gap-1 mb-2">
+          {FILES.map((file) => (
+            <button
+              key={file}
+              onClick={() => setActiveFile(file)}
+              className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
+                activeFile === file
+                  ? "bg-foreground text-background font-medium"
+                  : "bg-muted/50 text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {file.replace(".md", "")}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* View mode toggle — embedded 모드에서 숨김 */}
+      {!isEmbedded && (
+        <div className="flex gap-1 mb-3">
           <button
-            key={file}
-            onClick={() => setActiveFile(file)}
+            onClick={() => setViewMode("content")}
             className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
-              activeFile === file
+              viewMode === "content"
                 ? "bg-foreground text-background font-medium"
                 : "bg-muted/50 text-muted-foreground hover:bg-muted"
             }`}
           >
-            {file.replace(".md", "")}
+            본문
           </button>
-        ))}
-      </div>
-
-      {/* View mode toggle */}
-      <div className="flex gap-1 mb-3">
-        <button
-          onClick={() => setViewMode("content")}
-          className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
-            viewMode === "content"
-              ? "bg-foreground text-background font-medium"
-              : "bg-muted/50 text-muted-foreground hover:bg-muted"
-          }`}
-        >
-          본문
-        </button>
-        <button
-          onClick={() => setViewMode("diff")}
-          className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
-            viewMode === "diff"
-              ? "bg-foreground text-background font-medium"
-              : "bg-muted/50 text-muted-foreground hover:bg-muted"
-          }`}
-        >
-          변경
-        </button>
-      </div>
+          <button
+            onClick={() => setViewMode("diff")}
+            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
+              viewMode === "diff"
+                ? "bg-foreground text-background font-medium"
+                : "bg-muted/50 text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            변경
+          </button>
+        </div>
+      )}
 
       {viewMode === "content" ? (
         <ContentView repo={repo} file={activeFile} />
