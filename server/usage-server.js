@@ -268,10 +268,26 @@ function getKimiBalance() {
 }
 
 // --- HTTP Server ---
+// Helper functions
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", c => data += c);
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
+
+function sendError(res, code, message) {
+  res.writeHead(code, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: message }));
+}
+
 const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -495,6 +511,147 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ removed: removedItems, count: removedItems.length }));
+
+    // --- TODO CRUD API ---
+
+    // GET /api/projects — 전체 프로젝트 (활성 아이템만)
+    } else if (url.pathname === "/api/projects" && req.method === "GET") {
+      const projects = db.prepare("SELECT * FROM projects ORDER BY priority, sort_order, id").all();
+      const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order, id").all();
+      const activeItems = db.prepare("SELECT * FROM items WHERE status IN ('todo','in_progress','done') ORDER BY sort_order, id").all();
+
+      const result = projects.map(p => {
+        const projCats = categories.filter(c => c.project_id === p.id);
+        const projItems = activeItems.filter(i => i.project_id === p.id);
+
+        return {
+          id: p.id,
+          emoji: p.emoji,
+          name: p.name,
+          priority: p.priority,
+          items: projItems
+            .filter(i => i.category_id === null)
+            .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today })),
+          categories: projCats.map(c => ({
+            id: c.id,
+            name: c.name,
+            items: projItems
+              .filter(i => i.category_id === c.id)
+              .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today })),
+          })),
+        };
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+
+    // POST /api/projects — 프로젝트 생성
+    } else if (url.pathname === "/api/projects" && req.method === "POST") {
+      const body = await parseBody(req);
+      const { emoji, name } = JSON.parse(body);
+      if (!name) { sendError(res, 400, "name required"); return; }
+
+      const row = db.prepare(
+        `INSERT INTO projects (name, emoji, priority, sort_order)
+         VALUES (?, ?, 99, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
+         RETURNING *`
+      ).get(name, emoji || '📌');
+      res.writeHead(201, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(row));
+
+    // PATCH /api/projects/:id — 프로젝트 수정
+    } else if (url.pathname.match(/^\/api\/projects\/\d+$/) && req.method === "PATCH") {
+      const id = parseInt(url.pathname.split("/").pop());
+      const body = await parseBody(req);
+      const updates = JSON.parse(body);
+      const fields = [];
+      const values = [];
+      for (const key of ["emoji", "name", "priority"]) {
+        if (updates[key] !== undefined) { fields.push(`${key}=?`); values.push(updates[key]); }
+      }
+      if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
+      values.push(id);
+      db.prepare(`UPDATE projects SET ${fields.join(",")} WHERE id=?`).run(...values);
+      const row = db.prepare("SELECT * FROM projects WHERE id=?").get(id);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(row));
+
+    // DELETE /api/projects/:id — 프로젝트 삭제 (CASCADE)
+    } else if (url.pathname.match(/^\/api\/projects\/\d+$/) && req.method === "DELETE") {
+      const id = parseInt(url.pathname.split("/").pop());
+      db.prepare("DELETE FROM items WHERE project_id=?").run(id);
+      db.prepare("DELETE FROM categories WHERE project_id=?").run(id);
+      db.prepare("DELETE FROM projects WHERE id=?").run(id);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+
+    // POST /api/projects/:id/categories — 카테고리 생성
+    } else if (url.pathname.match(/^\/api\/projects\/\d+\/categories$/) && req.method === "POST") {
+      const projectId = parseInt(url.pathname.split("/")[3]);
+      const body = await parseBody(req);
+      const { name } = JSON.parse(body);
+      if (!name) { sendError(res, 400, "name required"); return; }
+      const row = db.prepare(
+        `INSERT INTO categories (project_id, name, sort_order)
+         VALUES (?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories WHERE project_id=?))
+         RETURNING *`
+      ).get(projectId, name, projectId);
+      res.writeHead(201, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(row));
+
+    // POST /api/projects/:id/items — 아이템 생성
+    } else if (url.pathname.match(/^\/api\/projects\/\d+\/items$/) && req.method === "POST") {
+      const projectId = parseInt(url.pathname.split("/")[3]);
+      const body = await parseBody(req);
+      const { title, content, category_id, is_today } = JSON.parse(body);
+      if (!title) { sendError(res, 400, "title required"); return; }
+      const row = db.prepare(
+        `INSERT INTO items (project_id, category_id, title, content, is_today, sort_order)
+         VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM items WHERE project_id=?))
+         RETURNING *`
+      ).get(projectId, category_id || null, title, content || null, is_today ? 1 : 0, projectId);
+      res.writeHead(201, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(row));
+
+    // PATCH /api/items/:id — 아이템 수정
+    } else if (url.pathname.match(/^\/api\/items\/\d+$/) && req.method === "PATCH") {
+      const id = parseInt(url.pathname.split("/").pop());
+      const body = await parseBody(req);
+      const updates = JSON.parse(body);
+      const fields = [];
+      const values = [];
+      for (const key of ["title", "content", "status", "is_today", "category_id"]) {
+        if (updates[key] !== undefined) {
+          fields.push(`${key}=?`);
+          values.push(key === "is_today" ? (updates[key] ? 1 : 0) : updates[key]);
+        }
+      }
+      if (updates.status === "done") { fields.push("updated_at=datetime('now')"); }
+      if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
+      values.push(id);
+      db.prepare(`UPDATE items SET ${fields.join(",")} WHERE id=?`).run(...values);
+      const row = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(row));
+
+    // DELETE /api/items/:id — 아이템 삭제
+    } else if (url.pathname.match(/^\/api\/items\/\d+$/) && req.method === "DELETE") {
+      const id = parseInt(url.pathname.split("/").pop());
+      db.prepare("DELETE FROM items WHERE id=?").run(id);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+
+    // POST /api/projects/:id/clear-done — 완료 항목 아카이브
+    } else if (url.pathname.match(/^\/api\/projects\/\d+\/clear-done$/) && req.method === "POST") {
+      const projectId = parseInt(url.pathname.split("/")[3]);
+      const done = db.prepare("SELECT COUNT(*) as cnt FROM items WHERE project_id=? AND status='done'").get(projectId);
+      db.prepare("UPDATE items SET status='archived', updated_at=datetime('now') WHERE project_id=? AND status='done'").run(projectId);
+      // 빈 카테고리 삭제
+      db.prepare(
+        `DELETE FROM categories WHERE project_id=? AND id NOT IN (SELECT DISTINCT category_id FROM items WHERE project_id=? AND category_id IS NOT NULL AND status != 'archived')`
+      ).run(projectId, projectId);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ cleared: done.cnt }));
 
     // --- Archive API: List ---
     } else if (url.pathname === "/archive" && req.method === "GET") {
