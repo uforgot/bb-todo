@@ -576,6 +576,18 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
 
+    // PUT /api/projects/reorder — 프로젝트 순서 변경
+    } else if (url.pathname === "/api/projects/reorder" && req.method === "PUT") {
+      const body = await parseBody(req);
+      const { order } = JSON.parse(body); // [id, id, id, ...]
+      const stmt = db.prepare("UPDATE projects SET sort_order=? WHERE id=?");
+      const tx = db.transaction((ids) => {
+        ids.forEach((id, i) => stmt.run(i, id));
+      });
+      tx(order);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+
     // DELETE /api/projects/:id — 프로젝트 삭제 (CASCADE)
     } else if (url.pathname.match(/^\/api\/projects\/\d+$/) && req.method === "DELETE") {
       const id = parseInt(url.pathname.split("/").pop());
