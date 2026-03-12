@@ -516,7 +516,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/projects — 전체 프로젝트 (활성 아이템만)
     } else if (url.pathname === "/api/projects" && req.method === "GET") {
-      const projects = db.prepare("SELECT * FROM projects ORDER BY priority, sort_order, id").all();
+      const projects = db.prepare("SELECT * FROM projects WHERE COALESCE(status,'active') = 'active' ORDER BY priority, sort_order, id").all();
       const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order, id").all();
       const activeItems = db.prepare("SELECT * FROM items WHERE status IN ('todo','in_progress','done') ORDER BY sort_order, id").all();
 
@@ -566,7 +566,7 @@ const server = http.createServer(async (req, res) => {
       const updates = JSON.parse(body);
       const fields = [];
       const values = [];
-      for (const key of ["emoji", "name", "priority"]) {
+      for (const key of ["emoji", "name", "priority", "status"]) {
         if (updates[key] !== undefined) { fields.push(`${key}=?`); values.push(updates[key]); }
       }
       if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
