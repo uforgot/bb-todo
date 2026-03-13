@@ -670,11 +670,11 @@ const server = http.createServer(async (req, res) => {
     } else if (url.pathname === "/archive" && req.method === "GET") {
       const projects = db.prepare("SELECT * FROM projects ORDER BY id DESC").all();
       const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order, id").all();
-      const items = db.prepare("SELECT * FROM items ORDER BY sort_order, id").all();
+      const archivedItems = db.prepare("SELECT * FROM items WHERE status = 'archived' ORDER BY sort_order, id").all();
 
       const result = projects.map(p => {
         const projCats = categories.filter(c => c.project_id === p.id);
-        const projItems = items.filter(i => i.project_id === p.id);
+        const projItems = archivedItems.filter(i => i.project_id === p.id);
 
         return {
           id: p.id,
@@ -686,13 +686,13 @@ const server = http.createServer(async (req, res) => {
             name: c.name,
             items: projItems
               .filter(i => i.category_id === c.id)
-              .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content, archivedAt: i.created_at })),
+              .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content, archivedAt: i.updated_at })),
           })),
           items: projItems
             .filter(i => i.category_id === null)
-            .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content, archivedAt: i.created_at })),
+            .map(i => ({ id: i.id, title: i.title, status: i.status, content: i.content, archivedAt: i.updated_at })),
         };
-      });
+      }).filter(p => p.items.length > 0 || p.categories.some(c => c.items.length > 0));
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ projects: result }));
