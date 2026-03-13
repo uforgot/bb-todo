@@ -659,9 +659,9 @@ const server = http.createServer(async (req, res) => {
       const projectId = parseInt(url.pathname.split("/")[3]);
       const done = db.prepare("SELECT COUNT(*) as cnt FROM items WHERE project_id=? AND status='done'").get(projectId);
       db.prepare("UPDATE items SET status='archived', updated_at=datetime('now') WHERE project_id=? AND status='done'").run(projectId);
-      // 빈 카테고리 삭제
+      // 빈 카테고리 삭제 (모든 status 아이템 참조 확인 — FK 제약)
       db.prepare(
-        `DELETE FROM categories WHERE project_id=? AND id NOT IN (SELECT DISTINCT category_id FROM items WHERE project_id=? AND category_id IS NOT NULL AND status != 'archived')`
+        `DELETE FROM categories WHERE project_id=? AND id NOT IN (SELECT DISTINCT category_id FROM items WHERE project_id=? AND category_id IS NOT NULL)`
       ).run(projectId, projectId);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ cleared: done.cnt }));
