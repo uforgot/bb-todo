@@ -135,7 +135,7 @@ export function TodoSection({ project, defaultOpen = true, onToggle, onClearDone
               )}
               {project.categories.length > 0 && (
                 <div className={project.items.length > 0 ? "mt-1.5" : ""}>
-                  {project.categories.map((cat) => (
+                  {project.categories.filter((cat) => cat.items.length > 0).map((cat) => (
                     <CategorySection key={cat.id} category={cat} onToggle={onToggle} disabled={disabled || isClearing} todayIds={todayIds} />
                   ))}
                 </div>
