@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { type TodoSection } from "@/lib/parser";
+import { type Project } from "@/hooks/use-projects";
 
 const NOTIFIED_KEY = "bb-todo-notified";
 const DATE_REGEX = /(\d{4}-\d{2}-\d{2})/;
@@ -56,35 +56,39 @@ export function useNotifications() {
     permissionRef.current = result;
   }, []);
 
-  const checkDeadlines = useCallback((sections: TodoSection[]) => {
+  const checkDeadlines = useCallback((projects: Project[]) => {
     if (typeof window === "undefined" || !("Notification" in window)) return;
     if (permissionRef.current !== "granted") return;
 
     const notified = getNotified();
-    const items: { text: string; line: number; date: string }[] = [];
+    const items: { title: string; id: number; date: string }[] = [];
 
-    function collectItems(secs: TodoSection[]) {
-      for (const section of secs) {
-        for (const item of section.items) {
-          if (item.checked) continue;
-          const match = item.text.match(DATE_REGEX);
+    for (const project of projects) {
+      for (const item of project.items) {
+        if (item.status === "done") continue;
+        const match = item.title.match(DATE_REGEX);
+        if (match && isWithin24h(match[1])) {
+          items.push({ title: item.title, id: item.id, date: match[1] });
+        }
+      }
+      for (const cat of project.categories) {
+        for (const item of cat.items) {
+          if (item.status === "done") continue;
+          const match = item.title.match(DATE_REGEX);
           if (match && isWithin24h(match[1])) {
-            items.push({ text: item.text, line: item.line, date: match[1] });
+            items.push({ title: item.title, id: item.id, date: match[1] });
           }
         }
-        collectItems(section.children);
       }
     }
 
-    collectItems(sections);
-
     for (const item of items) {
-      const key = `${item.line}:${item.date}`;
+      const key = `${item.id}:${item.date}`;
       if (notified.has(key)) continue;
 
       const label = getDueLabel(item.date);
       new Notification(`bb-todo 마감 알림 (${label})`, {
-        body: item.text,
+        body: item.title,
         icon: "/icons/icon-192x192.png",
         tag: key,
       });

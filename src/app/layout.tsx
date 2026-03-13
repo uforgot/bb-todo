@@ -10,7 +10,7 @@ const geist = Geist({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "할일빵빵",
-  description: "GitHub TODO.md PWA",
+  description: "할일빵빵",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,

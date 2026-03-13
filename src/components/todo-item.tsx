@@ -3,11 +3,11 @@
 import { useState } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Plus, Minus } from "lucide-react";
-import type { TodoItem as TodoItemType } from "@/lib/parser";
+import type { ProjectItem } from "@/hooks/use-projects";
 
 interface TodoItemProps {
-  item: TodoItemType;
-  onToggle?: (lineIndex: number, checked: boolean, text?: string) => void;
+  item: ProjectItem;
+  onToggle?: (id: number, checked: boolean) => void;
   disabled?: boolean;
   dimmed?: boolean;
   sectionLabel?: string;
@@ -16,7 +16,8 @@ interface TodoItemProps {
 
 export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFirstLabel }: TodoItemProps) {
   const [open, setOpen] = useState(false);
-  const hasDesc = item.descriptions.length > 0;
+  const checked = item.status === "done";
+  const hasDesc = !!item.content;
 
   return (
     <div className={`py-1.5 ${dimmed ? "opacity-70" : ""}`}>
@@ -28,8 +29,8 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFir
       )}
       <div className="flex items-center gap-2.5">
         <Checkbox
-          checked={item.checked}
-          onCheckedChange={(checked) => onToggle?.(item.line, !!checked, item.text)}
+          checked={checked}
+          onCheckedChange={(c) => onToggle?.(item.id, !!c)}
           disabled={disabled}
           className="shrink-0 size-5"
         />
@@ -40,10 +41,10 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFir
         >
           <span
             className={`text-sm leading-snug text-pretty ${
-              item.checked ? "line-through text-muted-foreground" : item.today ? "text-[#38BDF8]" : ""
+              checked ? "line-through text-muted-foreground" : item.is_today ? "text-[#38BDF8]" : ""
             }`}
           >
-            {item.text}
+            {item.title}
           </span>
         </button>
         {hasDesc && (
@@ -58,9 +59,9 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFir
       </div>
       {hasDesc && open && (
         <ul className="ml-8 mt-1 space-y-0.5">
-          {item.descriptions.map((desc, i) => (
+          {item.content!.split("\n").map((line, i) => (
             <li key={i} className="text-xs text-muted-foreground leading-snug text-pretty">
-              {desc}
+              {line}
             </li>
           ))}
         </ul>

@@ -3,7 +3,6 @@
 import { useTheme } from "next-themes";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle, ListTodo, Moon, Sun } from "lucide-react";
-import { useSyncTime } from "@/hooks/use-sync-time";
 
 interface TodoHeaderProps {
   total: number;
@@ -13,7 +12,6 @@ interface TodoHeaderProps {
 
 export function TodoHeader({ total, completed, countLabel }: TodoHeaderProps) {
   const { resolvedTheme, setTheme } = useTheme();
-  const { label: syncLabel } = useSyncTime();
   const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
 
   return (
@@ -21,9 +19,6 @@ export function TodoHeader({ total, completed, countLabel }: TodoHeaderProps) {
       <div className="flex items-center justify-between max-w-2xl mx-auto">
         <div className="flex items-center gap-2">
           <ListTodo className="h-5 w-5" />
-          {syncLabel && (
-            <p className="text-[10px] text-muted-foreground">{syncLabel}</p>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <Badge variant={countLabel ? "secondary" : percentage === 100 ? "default" : "secondary"}>

@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useCallback } from "react";
-import { useTodo } from "@/hooks/use-todo";
-import { countItems, type TodoItem as TodoItemType, type TodoSection as TodoSectionType } from "@/lib/parser";
+import { useProjects, type ProjectItem, type Project } from "@/hooks/use-projects";
+import { useNotifications } from "@/hooks/use-notifications";
 import { TodoHeader } from "@/components/todo-header";
 import { TodoSection } from "@/components/todo-section";
 import { TodoItem } from "@/components/todo-item";
@@ -10,39 +10,43 @@ import { Card, CardContent } from "@/components/ui/card";
 import { TodoSkeleton } from "@/components/todo-skeleton";
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { useToast } from "@/components/ui/toast";
-import { useNotifications } from "@/hooks/use-notifications";
 import { AlertCircle } from "lucide-react";
 
 interface TodayItem {
-  item: TodoItemType;
-  sectionTitle: string;
+  item: ProjectItem;
+  projectName: string;
 }
 
-function collectTodayItems(sections: TodoSectionType[], parentTitle?: string): TodayItem[] {
+function collectTodayItems(projects: Project[]): TodayItem[] {
   const result: TodayItem[] = [];
-  for (const section of sections) {
-    const label = parentTitle || section.title;
-    for (const item of section.items) {
-      if (item.today) {
-        result.push({ item, sectionTitle: label });
+  for (const project of projects) {
+    const label = project.emoji ? `${project.emoji} ${project.name}` : project.name;
+    for (const item of project.items) {
+      if (item.is_today) {
+        result.push({ item, projectName: label });
       }
     }
-    result.push(...collectTodayItems(section.children, label));
+    for (const cat of project.categories) {
+      for (const item of cat.items) {
+        if (item.is_today) {
+          result.push({ item, projectName: label });
+        }
+      }
+    }
   }
   return result;
 }
 
 export default function Home() {
   const { showError } = useToast();
-  const { sections, isLoading, isError, toggle, refresh, isFlushing } = useTodo(showError);
-  const { total, completed } = countItems(sections);
+  const { projects, total, completed, isLoading, isError, toggle, refresh } = useProjects(showError);
   const { requestPermission, checkDeadlines } = useNotifications();
 
   useEffect(() => {
-    if (sections.length > 0) {
-      requestPermission().then(() => checkDeadlines(sections));
+    if (projects.length > 0) {
+      requestPermission().then(() => checkDeadlines(projects));
     }
-  }, [sections, requestPermission, checkDeadlines]);
+  }, [projects, requestPermission, checkDeadlines]);
 
   const clearDone = useCallback(async (project: string) => {
     try {
@@ -62,7 +66,6 @@ export default function Home() {
         return;
       }
 
-      // Refresh todo list after clearing
       await refresh();
     } catch (err) {
       showError(err instanceof Error ? err.message : "Failed to clear done items");
@@ -84,23 +87,21 @@ export default function Home() {
         <TodoHeader total={0} completed={0} />
         <div className="flex flex-col items-center justify-center p-8 text-muted-foreground">
           <AlertCircle className="h-8 w-8 mb-2" />
-          <p className="text-sm">TODO.md를 불러올 수 없습니다</p>
+          <p className="text-sm">프로젝트를 불러올 수 없습니다</p>
         </div>
       </>
     );
   }
 
-  // level 1 래퍼 건너뛰고 children 바로 렌더링
-  const flatSections = sections.length === 1 && sections[0].children.length > 0
-    ? sections[0].children
-    : sections;
+  // Sort: priority 1 → 2 → rest
+  const sortedProjects = [...projects].sort((a, b) => {
+    const pa = a.priority === 1 ? 0 : a.priority === 2 ? 1 : 2;
+    const pb = b.priority === 1 ? 0 : b.priority === 2 ? 1 : 2;
+    return pa - pb;
+  });
 
-  // Sort: !1 → !2 → none
-  const priorityOrder = (s: TodoSectionType) => s.priority === '!1' ? 0 : s.priority === '!2' ? 1 : 2;
-  const sortedSections = [...flatSections].sort((a, b) => priorityOrder(a) - priorityOrder(b));
-
-  const todayItems = collectTodayItems(sortedSections);
-  const todayLines = new Set(todayItems.map((t) => t.item.line));
+  const todayItems = collectTodayItems(sortedProjects);
+  const todayIds = new Set(todayItems.map((t) => t.item.id));
 
   return (
     <>
@@ -115,17 +116,16 @@ export default function Home() {
                   {(() => {
                     let firstLabelShown = false;
                     return todayItems.map((t, i) => {
-                      const prevLabel = i > 0 ? todayItems[i - 1].sectionTitle : null;
-                      const showLabel = t.sectionTitle !== prevLabel;
+                      const prevLabel = i > 0 ? todayItems[i - 1].projectName : null;
+                      const showLabel = t.projectName !== prevLabel;
                       const isFirst = showLabel && !firstLabelShown;
                       if (showLabel) firstLabelShown = true;
                       return (
                         <TodoItem
-                          key={t.item.line}
+                          key={t.item.id}
                           item={t.item}
                           onToggle={toggle}
-                          disabled={isFlushing}
-                          sectionLabel={showLabel ? t.sectionTitle : undefined}
+                          sectionLabel={showLabel ? t.projectName : undefined}
                           isFirstLabel={isFirst}
                         />
                       );
@@ -136,19 +136,18 @@ export default function Home() {
             </Card>
           )}
           <div className="space-y-0">
-            {sortedSections.map((section, idx) => (
+            {sortedProjects.map((project, idx) => (
               <TodoSection
-                key={idx}
-                section={section}
+                key={project.id}
+                project={project}
                 defaultOpen={idx < 3}
                 onToggle={toggle}
                 onClearDone={clearDone}
-                isFlushing={isFlushing}
-                todayLines={todayLines}
+                todayIds={todayIds}
               />
             ))}
           </div>
-          {flatSections.length === 0 && (
+          {projects.length === 0 && (
             <p className="text-center text-muted-foreground py-8 text-sm">
               TODO 항목이 없습니다
             </p>
