@@ -48,29 +48,6 @@ export default function Home() {
     }
   }, [projects, requestPermission, checkDeadlines]);
 
-  const clearDone = useCallback(async (project: string) => {
-    try {
-      const res = await fetch("/api/archive", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Failed to clear done items");
-      }
-
-      const data = await res.json();
-      if (data.count === 0) {
-        return;
-      }
-
-      await refresh();
-    } catch (err) {
-      showError(err instanceof Error ? err.message : "Failed to clear done items");
-    }
-  }, [refresh, showError]);
 
   if (isLoading) {
     return (
@@ -142,7 +119,7 @@ export default function Home() {
                 project={project}
                 defaultOpen={idx < 3}
                 onToggle={toggle}
-                onClearDone={clearDone}
+
                 todayIds={todayIds}
               />
             ))}
