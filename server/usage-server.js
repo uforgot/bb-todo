@@ -697,6 +697,29 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ projects: result }));
 
+    } else if (url.pathname === "/api/agent-file" && req.method === "GET") {
+      const agent = url.searchParams.get("agent") || "bbang";
+      const file = url.searchParams.get("file") || "MEMORY.md";
+      const ALLOWED_FILES = ["MEMORY.md", "SOUL.md", "AGENTS.md", "TOOLS.md"];
+      const JSON_HEADER = { "Content-Type": "application/json" };
+      if (!ALLOWED_FILES.includes(file)) {
+        res.writeHead(400, JSON_HEADER);
+        res.end(JSON.stringify({ error: "Invalid file" }));
+        return;
+      }
+      const basePath = agent === "pang"
+        ? path.join(require("os").homedir(), ".openclaw/workspace-pang")
+        : path.join(require("os").homedir(), ".openclaw/workspace");
+      const filePath = path.join(basePath, file);
+      try {
+        const content = fs.readFileSync(filePath, "utf-8");
+        res.writeHead(200, JSON_HEADER);
+        res.end(JSON.stringify({ content }));
+      } catch (e) {
+        res.writeHead(404, JSON_HEADER);
+        res.end(JSON.stringify({ error: "File not found" }));
+      }
+
     } else if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
