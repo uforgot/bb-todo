@@ -529,6 +529,7 @@ const server = http.createServer(async (req, res) => {
           emoji: p.emoji,
           name: p.name,
           priority: p.priority,
+          color: p.color || null,
           items: projItems
             .filter(i => i.category_id === null)
             .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today })),
@@ -566,7 +567,7 @@ const server = http.createServer(async (req, res) => {
       const updates = JSON.parse(body);
       const fields = [];
       const values = [];
-      for (const key of ["emoji", "name", "priority", "status"]) {
+      for (const key of ["emoji", "name", "priority", "status", "color"]) {
         if (updates[key] !== undefined) { fields.push(`${key}=?`); values.push(updates[key]); }
       }
       if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
