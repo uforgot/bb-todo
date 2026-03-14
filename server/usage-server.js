@@ -654,6 +654,18 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
 
+    // POST /api/untoday-all — 오늘 할 일 전체 해제
+    } else if (url.pathname === "/api/untoday-all" && req.method === "POST") {
+      let filter = "is_today = 1";
+      try {
+        const body = await parseBody(req);
+        const opts = JSON.parse(body);
+        if (opts.done_only) filter += " AND status = 'done'";
+      } catch {}
+      const info = db.prepare(`UPDATE items SET is_today = 0 WHERE ${filter}`).run();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ cleared: info.changes }));
+
     // POST /api/projects/:id/clear-done — 완료 항목 아카이브
     } else if (url.pathname.match(/^\/api\/projects\/\d+\/clear-done$/) && req.method === "POST") {
       const projectId = parseInt(url.pathname.split("/")[3]);
