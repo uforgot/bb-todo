@@ -518,7 +518,7 @@ const server = http.createServer(async (req, res) => {
     } else if (url.pathname === "/api/projects" && req.method === "GET") {
       const projects = db.prepare("SELECT * FROM projects WHERE COALESCE(status,'active') = 'active' ORDER BY priority, sort_order, id").all();
       const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order, id").all();
-      const activeItems = db.prepare("SELECT * FROM items WHERE status IN ('todo','in_progress','done') ORDER BY sort_order, id").all();
+      const activeItems = db.prepare("SELECT * FROM items WHERE status IN ('todo','in_progress','done','review') ORDER BY sort_order, id").all();
 
       const result = projects.map(p => {
         const projCats = categories.filter(c => c.project_id === p.id);
