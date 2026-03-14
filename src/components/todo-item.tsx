@@ -17,6 +17,7 @@ interface TodoItemProps {
 export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFirstLabel }: TodoItemProps) {
   const [open, setOpen] = useState(false);
   const checked = item.status === "done";
+  const isReview = item.status === "review";
   const hasDesc = !!item.content;
 
   return (
@@ -41,10 +42,10 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFir
         >
           <span
             className={`text-sm leading-snug text-pretty ${
-              checked ? "line-through text-muted-foreground" : item.is_today ? "text-[#38BDF8]" : ""
+              checked ? "line-through text-muted-foreground" : isReview ? "text-orange-500" : item.is_today ? "text-[#38BDF8]" : ""
             }`}
           >
-            {item.title}
+            {isReview && "👀 "}{item.title}
           </span>
         </button>
         {hasDesc && (
