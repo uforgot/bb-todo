@@ -79,7 +79,7 @@ db.exec(`
     project_id INTEGER NOT NULL REFERENCES projects(id),
     category_id INTEGER REFERENCES categories(id),
     status TEXT NOT NULL DEFAULT 'todo'
-      CHECK (status IN ('todo', 'in_progress', 'done', 'archived')),
+      CHECK (status IN ('todo', 'in_progress', 'done', 'review', 'archived')),
     title TEXT NOT NULL,
     content TEXT,
     sort_order INTEGER DEFAULT 0,
