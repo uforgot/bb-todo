@@ -612,6 +612,14 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
 
+    // DELETE /api/categories/:id — 카테고리 삭제 (아이템은 루트로 이동)
+    } else if (url.pathname.match(/^\/api\/categories\/\d+$/) && req.method === "DELETE") {
+      const catId = parseInt(url.pathname.split("/")[3]);
+      db.prepare("UPDATE items SET category_id=NULL WHERE category_id=?").run(catId);
+      db.prepare("DELETE FROM categories WHERE id=?").run(catId);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, message: "Category deleted, items moved to root" }));
+
     // POST /api/projects/:id/items — 아이템 생성
     } else if (url.pathname.match(/^\/api\/projects\/\d+\/items$/) && req.method === "POST") {
       const projectId = parseInt(url.pathname.split("/")[3]);
