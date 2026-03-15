@@ -572,13 +572,13 @@ const server = http.createServer(async (req, res) => {
           color: p.color || null,
           items: projItems
             .filter(i => i.category_id === null)
-            .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today })),
+            .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null })),
           categories: projCats.map(c => ({
             id: c.id,
             name: c.name,
             items: projItems
               .filter(i => i.category_id === c.id)
-              .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today })),
+              .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null })),
           })),
         };
       });
