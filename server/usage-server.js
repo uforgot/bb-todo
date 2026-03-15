@@ -834,6 +834,55 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: "File not found" }));
       }
 
+    // POST /api/assign — 빵빵한테 시키기
+    } else if (url.pathname === "/api/assign" && req.method === "POST") {
+      const body = await parseBody(req);
+      const { item_ids } = JSON.parse(body);
+      if (!item_ids || !item_ids.length) { sendError(res, 400, "item_ids required"); return; }
+
+      const items = item_ids.map(id => db.prepare("SELECT i.*, p.name as project_name, p.emoji as project_emoji, p.discord_channel_id, p.discord_thread_id FROM items i JOIN projects p ON i.project_id = p.id WHERE i.id=?").get(id)).filter(Boolean);
+
+      // 프로젝트별 그루핑
+      const grouped = {};
+      for (const item of items) {
+        const key = item.project_name;
+        if (!grouped[key]) grouped[key] = { emoji: item.project_emoji, channelId: item.discord_channel_id, threadId: item.discord_thread_id, items: [] };
+        grouped[key].items.push(item);
+      }
+
+      // Discord 웹훅 전송
+      const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
+      if (webhookUrl) {
+        let msg = "📋 **형주가 시킨 할일**\n\n";
+        for (const [proj, data] of Object.entries(grouped)) {
+          const target = data.threadId || data.channelId;
+          const channelMention = target ? ` → <#${target}>` : "";
+          msg += `**${data.emoji || "📌"} ${proj}**${channelMention}\n`;
+          for (const item of data.items) {
+            msg += `- #${item.id} ${item.title}\n`;
+          }
+          msg += "\n";
+        }
+        try {
+          await new Promise((resolve, reject) => {
+            const url = new URL(webhookUrl);
+            const payload = JSON.stringify({ content: msg.trim() });
+            const req = https.request({ hostname: url.hostname, path: url.pathname, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => resolve(d)); });
+            req.on("error", reject);
+            req.write(payload);
+            req.end();
+          });
+        } catch (e) { console.error("[assign] webhook error:", e.message); }
+      }
+
+      // 아이템 상태를 in_progress로
+      const stmt = db.prepare("UPDATE items SET status='in_progress' WHERE id=?");
+      for (const id of item_ids) stmt.run(id);
+      broadcastSSE("items-changed", { action: "assign" });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ assigned: items.length }));
+
     // GET /api/discord-channels — Discord 채널/스레드 목록 (계층 구조)
     } else if (url.pathname === "/api/discord-channels" && req.method === "GET") {
       const all = db.prepare("SELECT * FROM discord_channels ORDER BY name").all();
