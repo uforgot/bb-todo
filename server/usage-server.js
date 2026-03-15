@@ -941,6 +941,15 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ assigned: items.length }));
 
+    // POST /api/discord-channels/sync — 수동 동기화
+    } else if (url.pathname === "/api/discord-channels/sync" && req.method === "POST") {
+      await syncDiscordChannels();
+      const all = db.prepare("SELECT * FROM discord_channels ORDER BY name").all();
+      const channels = all.filter(c => c.type === "channel");
+      const threads = all.filter(c => c.type === "thread");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ synced: true, channels: channels.length, threads: threads.length }));
+
     // GET /api/discord-channels — Discord 채널/스레드 목록 (계층 구조)
     } else if (url.pathname === "/api/discord-channels" && req.method === "GET") {
       const all = db.prepare("SELECT * FROM discord_channels ORDER BY name").all();
