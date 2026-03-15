@@ -850,29 +850,44 @@ const server = http.createServer(async (req, res) => {
         grouped[key].items.push(item);
       }
 
-      // Discord 웹훅 전송
-      const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
-      if (webhookUrl) {
-        let msg = "📋 **형주가 시킨 할일** <@1471495923400970377>\n\n";
+      // Discord 봇으로 각 채널에 메시지 전송
+      const botToken = process.env.DISCORD_BOT_TOKEN;
+      if (botToken) {
+        const sendDiscord = (channelId, content) => new Promise((resolve, reject) => {
+          const payload = JSON.stringify({ content });
+          const dReq = https.request({
+            hostname: "discord.com", path: `/api/v10/channels/${channelId}/messages`, method: "POST",
+            headers: { "Authorization": `Bot ${botToken}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+          }, (dRes) => { let d = ""; dRes.on("data", c => d += c); dRes.on("end", () => resolve(d)); });
+          dReq.on("error", reject);
+          dReq.write(payload);
+          dReq.end();
+        });
+
         for (const [proj, data] of Object.entries(grouped)) {
-          const target = data.threadId || data.channelId;
-          const channelMention = target ? ` → <#${target}>` : "";
-          msg += `**${data.emoji || "📌"} ${proj}**${channelMention}\n`;
+          const targetChannel = data.threadId || data.channelId;
+          let msg = `📋 **형주가 시킨 할일** <@1471495923400970377>\n\n`;
+          msg += `**${data.emoji || "📌"} ${proj}**\n`;
           for (const item of data.items) {
             msg += `- #${item.id} ${item.title}\n`;
           }
-          msg += "\n";
+          if (targetChannel) {
+            try { await sendDiscord(targetChannel, msg.trim()); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
+          } else {
+            // 채널 매핑 없으면 bb-dingdong으로 fallback
+            const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
+            if (webhookUrl) {
+              try {
+                const whUrl = new URL(webhookUrl);
+                const payload = JSON.stringify({ content: msg.trim() });
+                const whReq = https.request({ hostname: whUrl.hostname, path: whUrl.pathname + whUrl.search, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (whRes) => { let d = ""; whRes.on("data", c => d += c); whRes.on("end", () => resolve(d)); });
+                whReq.on("error", (e) => console.error("[assign] webhook error:", e.message));
+                whReq.write(payload);
+                whReq.end();
+              } catch (e) { console.error("[assign] webhook error:", e.message); }
+            }
+          }
         }
-        try {
-          await new Promise((resolve, reject) => {
-            const whUrl = new URL(webhookUrl);
-            const payload = JSON.stringify({ content: msg.trim() });
-            const whReq = https.request({ hostname: whUrl.hostname, path: whUrl.pathname + whUrl.search, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (whRes) => { let d = ""; whRes.on("data", c => d += c); whRes.on("end", () => resolve(d)); });
-            whReq.on("error", reject);
-            whReq.write(payload);
-            whReq.end();
-          });
-        } catch (e) { console.error("[assign] webhook error:", e.message); }
       }
 
       // 아이템 상태를 in_progress로
