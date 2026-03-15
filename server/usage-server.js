@@ -293,6 +293,13 @@ function broadcastSSE(event, data = {}) {
   }
 }
 
+// Heartbeat — 좀비 커넥션 정리 (30초마다 ping)
+setInterval(() => {
+  for (const client of sseClients) {
+    try { client.write(": ping\n\n"); } catch { sseClients.delete(client); }
+  }
+}, 30000);
+
 const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -327,6 +334,7 @@ const server = http.createServer(async (req, res) => {
       res.write("event: connected\ndata: {}\n\n");
       sseClients.add(res);
       req.on("close", () => sseClients.delete(res));
+      req.on("error", () => sseClients.delete(res));
       return;
     }
 
@@ -637,6 +645,7 @@ const server = http.createServer(async (req, res) => {
          VALUES (?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories WHERE project_id=?))
          RETURNING *`
       ).get(projectId, name, projectId);
+      broadcastSSE("category-created", { id: row.id, projectId });
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
 
@@ -645,6 +654,7 @@ const server = http.createServer(async (req, res) => {
       const catId = parseInt(url.pathname.split("/")[3]);
       db.prepare("UPDATE items SET category_id=NULL WHERE category_id=?").run(catId);
       db.prepare("DELETE FROM categories WHERE id=?").run(catId);
+      broadcastSSE("category-deleted", { id: catId });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, message: "Category deleted, items moved to root" }));
 
