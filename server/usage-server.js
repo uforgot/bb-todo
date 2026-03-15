@@ -102,11 +102,15 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS discord_channels (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    type TEXT DEFAULT 'channel'
+    type TEXT DEFAULT 'channel',
+    parent_id TEXT
   );
 `);
-// Seed discord channels (upsert)
+// Migration: parent_id
+try { db.exec("ALTER TABLE discord_channels ADD COLUMN parent_id TEXT"); } catch {}
+// Seed discord channels (upsert with parent_id)
 const seedChannels = [
+  // Channels
   { id: "1472134667946954894", name: "bb-dingdong" },
   { id: "1472162937648189615", name: "bb-private" },
   { id: "1475129999991509094", name: "bb-write" },
@@ -117,10 +121,18 @@ const seedChannels = [
   { id: "1476790981767467099", name: "bb-test-hachi" },
   { id: "1478213782365798503", name: "bb-euri" },
   { id: "1479067067704676384", name: "df" },
-  { id: "1481459571703939262", name: "bb-app", type: "thread" },
+  // Threads (with parent_id)
+  { id: "1481459571703939262", name: "bb-app 개발", type: "thread", parent_id: "1472162937648189615" },
+  { id: "1481838146936115251", name: "df-workapp", type: "thread", parent_id: "1479067067704676384" },
+  { id: "1482347838116724776", name: "cms 포팅 이슈", type: "thread", parent_id: "1476069327731032085" },
+  { id: "1482006987758637066", name: "cms 에러 리포트", type: "thread", parent_id: "1476069327731032085" },
+  { id: "1481841554095345736", name: "도훈공장", type: "thread", parent_id: "1476069327731032085" },
+  { id: "1481841285236261025", name: "inyoung", type: "thread", parent_id: "1476069327731032085" },
+  { id: "1481837585306353664", name: "google analytics", type: "thread", parent_id: "1476069327731032085" },
+  { id: "1481835294385766470", name: "csw", type: "thread", parent_id: "1476069327731032085" },
 ];
-const upsertChannel = db.prepare("INSERT INTO discord_channels (id, name, type) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, type=excluded.type");
-for (const ch of seedChannels) upsertChannel.run(ch.id, ch.name, ch.type || "channel");
+const upsertChannel = db.prepare("INSERT INTO discord_channels (id, name, type, parent_id) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, type=excluded.type, parent_id=excluded.parent_id");
+for (const ch of seedChannels) upsertChannel.run(ch.id, ch.name, ch.type || "channel", ch.parent_id || null);
 
 console.log(`✅ SQLite DB ready: ${DB_PATH}`);
 
@@ -822,9 +834,13 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: "File not found" }));
       }
 
-    // GET /api/discord-channels — Discord 채널/스레드 목록
+    // GET /api/discord-channels — Discord 채널/스레드 목록 (계층 구조)
     } else if (url.pathname === "/api/discord-channels" && req.method === "GET") {
-      const channels = db.prepare("SELECT * FROM discord_channels ORDER BY name").all();
+      const all = db.prepare("SELECT * FROM discord_channels ORDER BY name").all();
+      const channels = all.filter(c => c.type === "channel").map(ch => ({
+        ...ch,
+        threads: all.filter(t => t.parent_id === ch.id),
+      }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(channels));
 
