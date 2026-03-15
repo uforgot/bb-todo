@@ -92,6 +92,8 @@ db.exec(`
 try { db.exec("ALTER TABLE items ADD COLUMN review_count INTEGER DEFAULT 0"); } catch {}
 // Migration: is_today
 try { db.exec("ALTER TABLE items ADD COLUMN is_today INTEGER DEFAULT 0"); } catch {}
+// Migration: review_emoji
+try { db.exec("ALTER TABLE items ADD COLUMN review_emoji TEXT"); } catch {}
 
 console.log(`✅ SQLite DB ready: ${DB_PATH}`);
 
@@ -686,7 +688,7 @@ const server = http.createServer(async (req, res) => {
       const updates = JSON.parse(body);
       const fields = [];
       const values = [];
-      for (const key of ["title", "content", "status", "is_today", "category_id"]) {
+      for (const key of ["title", "content", "status", "is_today", "category_id", "review_emoji"]) {
         if (updates[key] !== undefined) {
           fields.push(`${key}=?`);
           values.push(key === "is_today" ? (updates[key] ? 1 : 0) : updates[key]);
