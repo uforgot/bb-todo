@@ -283,6 +283,16 @@ function sendError(res, code, message) {
   res.end(JSON.stringify({ error: message }));
 }
 
+// --- SSE (Server-Sent Events) ---
+const sseClients = new Set();
+
+function broadcastSSE(event, data = {}) {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    try { client.write(payload); } catch { sseClients.delete(client); }
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -306,6 +316,20 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    // SSE endpoint
+    if (url.pathname === "/events" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.write("event: connected\ndata: {}\n\n");
+      sseClients.add(res);
+      req.on("close", () => sseClients.delete(res));
+      return;
+    }
+
     if (url.pathname === "/usage" || url.pathname === "/usage/") {
       const [claude, kimi] = await Promise.all([
         getClaudeUsage(),
@@ -557,6 +581,7 @@ const server = http.createServer(async (req, res) => {
          VALUES (?, ?, 99, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
          RETURNING *`
       ).get(name, emoji || '📌');
+      broadcastSSE("project-created", { id: row.id });
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
 
@@ -574,6 +599,7 @@ const server = http.createServer(async (req, res) => {
       values.push(id);
       db.prepare(`UPDATE projects SET ${fields.join(",")} WHERE id=?`).run(...values);
       const row = db.prepare("SELECT * FROM projects WHERE id=?").get(id);
+      broadcastSSE("project-updated", { id });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
 
@@ -586,6 +612,7 @@ const server = http.createServer(async (req, res) => {
         ids.forEach((id, i) => stmt.run(i, id));
       });
       tx(order);
+      broadcastSSE("projects-reordered", {});
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
 
@@ -595,6 +622,7 @@ const server = http.createServer(async (req, res) => {
       db.prepare("DELETE FROM items WHERE project_id=?").run(id);
       db.prepare("DELETE FROM categories WHERE project_id=?").run(id);
       db.prepare("DELETE FROM projects WHERE id=?").run(id);
+      broadcastSSE("project-deleted", { id });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
 
@@ -631,6 +659,7 @@ const server = http.createServer(async (req, res) => {
          VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM items WHERE project_id=?))
          RETURNING *`
       ).get(projectId, category_id || null, title, content || null, is_today ? 1 : 0, projectId);
+      broadcastSSE("item-created", { id: row.id, projectId });
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
 
@@ -652,13 +681,16 @@ const server = http.createServer(async (req, res) => {
       values.push(id);
       db.prepare(`UPDATE items SET ${fields.join(",")} WHERE id=?`).run(...values);
       const row = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      broadcastSSE("item-updated", { id, projectId: row?.project_id });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
 
     // DELETE /api/items/:id — 아이템 삭제
     } else if (url.pathname.match(/^\/api\/items\/\d+$/) && req.method === "DELETE") {
       const id = parseInt(url.pathname.split("/").pop());
+      const item = db.prepare("SELECT project_id FROM items WHERE id=?").get(id);
       db.prepare("DELETE FROM items WHERE id=?").run(id);
+      broadcastSSE("item-deleted", { id, projectId: item?.project_id });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
 
@@ -671,6 +703,7 @@ const server = http.createServer(async (req, res) => {
         if (opts.done_only) filter += " AND status = 'done'";
       } catch {}
       const info = db.prepare(`UPDATE items SET is_today = 0 WHERE ${filter}`).run();
+      broadcastSSE("items-changed", { action: "untoday-all" });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ cleared: info.changes }));
 
@@ -683,6 +716,7 @@ const server = http.createServer(async (req, res) => {
       db.prepare(
         `DELETE FROM categories WHERE project_id=? AND id NOT IN (SELECT DISTINCT category_id FROM items WHERE project_id=? AND category_id IS NOT NULL)`
       ).run(projectId, projectId);
+      broadcastSSE("items-changed", { action: "clear-done", projectId });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ cleared: done.cnt }));
 
