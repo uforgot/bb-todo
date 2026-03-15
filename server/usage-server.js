@@ -94,6 +94,33 @@ try { db.exec("ALTER TABLE items ADD COLUMN review_count INTEGER DEFAULT 0"); } 
 try { db.exec("ALTER TABLE items ADD COLUMN is_today INTEGER DEFAULT 0"); } catch {}
 // Migration: review_emoji
 try { db.exec("ALTER TABLE items ADD COLUMN review_emoji TEXT"); } catch {}
+// Migration: discord channel mapping
+try { db.exec("ALTER TABLE projects ADD COLUMN discord_channel_id TEXT"); } catch {}
+try { db.exec("ALTER TABLE projects ADD COLUMN discord_thread_id TEXT"); } catch {}
+// Discord channels table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS discord_channels (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT DEFAULT 'channel'
+  );
+`);
+// Seed discord channels (upsert)
+const seedChannels = [
+  { id: "1472134667946954894", name: "bb-dingdong" },
+  { id: "1472162937648189615", name: "bb-private" },
+  { id: "1475129999991509094", name: "bb-write" },
+  { id: "1475344740290527363", name: "bb-test" },
+  { id: "1476069327731032085", name: "kia-renewal" },
+  { id: "1476412197658689536", name: "designsamsung" },
+  { id: "1477270129539813387", name: "bb-budget" },
+  { id: "1476790981767467099", name: "bb-test-hachi" },
+  { id: "1478213782365798503", name: "bb-euri" },
+  { id: "1479067067704676384", name: "df" },
+  { id: "1481459571703939262", name: "bb-app", type: "thread" },
+];
+const upsertChannel = db.prepare("INSERT INTO discord_channels (id, name, type) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, type=excluded.type");
+for (const ch of seedChannels) upsertChannel.run(ch.id, ch.name, ch.type || "channel");
 
 console.log(`✅ SQLite DB ready: ${DB_PATH}`);
 
@@ -570,6 +597,8 @@ const server = http.createServer(async (req, res) => {
           name: p.name,
           priority: p.priority,
           color: p.color || null,
+          discord_channel_id: p.discord_channel_id || null,
+          discord_thread_id: p.discord_thread_id || null,
           items: projItems
             .filter(i => i.category_id === null)
             .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null })),
@@ -608,7 +637,7 @@ const server = http.createServer(async (req, res) => {
       const updates = JSON.parse(body);
       const fields = [];
       const values = [];
-      for (const key of ["emoji", "name", "priority", "status", "color"]) {
+      for (const key of ["emoji", "name", "priority", "status", "color", "discord_channel_id", "discord_thread_id"]) {
         if (updates[key] !== undefined) { fields.push(`${key}=?`); values.push(updates[key]); }
       }
       if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
@@ -792,6 +821,12 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(404, JSON_HEADER);
         res.end(JSON.stringify({ error: "File not found" }));
       }
+
+    // GET /api/discord-channels — Discord 채널/스레드 목록
+    } else if (url.pathname === "/api/discord-channels" && req.method === "GET") {
+      const channels = db.prepare("SELECT * FROM discord_channels ORDER BY name").all();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(channels));
 
     } else if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
