@@ -865,12 +865,12 @@ const server = http.createServer(async (req, res) => {
         }
         try {
           await new Promise((resolve, reject) => {
-            const url = new URL(webhookUrl);
+            const whUrl = new URL(webhookUrl);
             const payload = JSON.stringify({ content: msg.trim() });
-            const req = https.request({ hostname: url.hostname, path: url.pathname, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => resolve(d)); });
-            req.on("error", reject);
-            req.write(payload);
-            req.end();
+            const whReq = https.request({ hostname: whUrl.hostname, path: whUrl.pathname + whUrl.search, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (whRes) => { let d = ""; whRes.on("data", c => d += c); whRes.on("end", () => resolve(d)); });
+            whReq.on("error", reject);
+            whReq.write(payload);
+            whReq.end();
           });
         } catch (e) { console.error("[assign] webhook error:", e.message); }
       }
