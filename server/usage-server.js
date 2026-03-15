@@ -134,6 +134,49 @@ const seedChannels = [
 const upsertChannel = db.prepare("INSERT INTO discord_channels (id, name, type, parent_id) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, type=excluded.type, parent_id=excluded.parent_id");
 for (const ch of seedChannels) upsertChannel.run(ch.id, ch.name, ch.type || "channel", ch.parent_id || null);
 
+// --- Discord Channel Sync ---
+const GUILD_ID = "1471498460271218894";
+
+async function syncDiscordChannels() {
+  const botToken = process.env.DISCORD_BOT_TOKEN;
+  if (!botToken) { console.log("[discord-sync] no bot token, skipping"); return; }
+
+  const fetchJson = (path) => new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: "discord.com", path, method: "GET",
+      headers: { "Authorization": `Bot ${botToken}` }
+    }, (res) => {
+      let d = ""; res.on("data", c => d += c);
+      res.on("end", () => { try { resolve(JSON.parse(d)); } catch { reject(new Error(d)); } });
+    });
+    req.on("error", reject); req.end();
+  });
+
+  try {
+    // 1. Get guild channels
+    const channels = await fetchJson(`/api/v10/guilds/${GUILD_ID}/channels`);
+    const textChannels = channels.filter(c => c.type === 0); // GUILD_TEXT
+    for (const ch of textChannels) {
+      upsertChannel.run(ch.id, ch.name, "channel", null);
+    }
+
+    // 2. Get active threads
+    const threadData = await fetchJson(`/api/v10/guilds/${GUILD_ID}/threads/active`);
+    const threads = threadData.threads || [];
+    for (const t of threads) {
+      upsertChannel.run(t.id, t.name, "thread", t.parent_id || null);
+    }
+
+    console.log(`[discord-sync] synced ${textChannels.length} channels + ${threads.length} threads`);
+  } catch (e) {
+    console.error("[discord-sync] error:", e.message);
+  }
+}
+
+// Sync on startup + every 30 minutes
+syncDiscordChannels();
+setInterval(syncDiscordChannels, 30 * 60 * 1000);
+
 console.log(`✅ SQLite DB ready: ${DB_PATH}`);
 
 // --- Cron Poller (reads jobs.json → SQLite) ---
