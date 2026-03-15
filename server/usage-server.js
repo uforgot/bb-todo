@@ -853,7 +853,7 @@ const server = http.createServer(async (req, res) => {
       // Discord 웹훅 전송
       const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
       if (webhookUrl) {
-        let msg = "📋 **형주가 시킨 할일**\n\n";
+        let msg = "📋 **형주가 시킨 할일** <@1471495923400970377>\n\n";
         for (const [proj, data] of Object.entries(grouped)) {
           const target = data.threadId || data.channelId;
           const channelMention = target ? ` → <#${target}>` : "";
