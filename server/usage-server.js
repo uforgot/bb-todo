@@ -850,8 +850,8 @@ const server = http.createServer(async (req, res) => {
         grouped[key].items.push(item);
       }
 
-      // Discord 봇으로 각 채널에 메시지 전송
-      const botToken = process.env.DISCORD_BOT_TOKEN;
+      // Discord 팡팡 봇으로 각 채널에 메시지 전송 (빵빵 봇은 자기 메시지 무시하므로 팡팡으로 전송)
+      const botToken = process.env.DISCORD_PANG_TOKEN || process.env.DISCORD_BOT_TOKEN;
       if (botToken) {
         const sendDiscord = (channelId, content) => new Promise((resolve, reject) => {
           const payload = JSON.stringify({ content });
@@ -866,7 +866,7 @@ const server = http.createServer(async (req, res) => {
 
         for (const [proj, data] of Object.entries(grouped)) {
           const targetChannel = data.threadId || data.channelId;
-          let msg = `📋 **형주가 시킨 할일** <@1471495923400970377>\n\n`;
+          let msg = `📋 **형주가 시킨 할일** <@1471495923400970377> <@1472592813043744832>\n\n`;
           msg += `**${data.emoji || "📌"} ${proj}**\n`;
           for (const item of data.items) {
             msg += `- #${item.id} ${item.title}\n`;
