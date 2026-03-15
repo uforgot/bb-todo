@@ -87,6 +87,12 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 `);
+
+// Migration: review_count
+try { db.exec("ALTER TABLE items ADD COLUMN review_count INTEGER DEFAULT 0"); } catch {}
+// Migration: is_today
+try { db.exec("ALTER TABLE items ADD COLUMN is_today INTEGER DEFAULT 0"); } catch {}
+
 console.log(`✅ SQLite DB ready: ${DB_PATH}`);
 
 // --- Cron Poller (reads jobs.json → SQLite) ---
@@ -687,6 +693,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
       if (updates.status === "done") { fields.push("updated_at=datetime('now')"); }
+      if (updates.status === "review") { fields.push("review_count=COALESCE(review_count,0)+1"); }
       if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
       values.push(id);
       db.prepare(`UPDATE items SET ${fields.join(",")} WHERE id=?`).run(...values);
