@@ -909,11 +909,11 @@ const server = http.createServer(async (req, res) => {
 
         for (const [proj, data] of Object.entries(grouped)) {
           const targetChannel = data.threadId || data.channelId;
-          let msg = `📋 할일빵빵에서 형주가 시켰어 <@1471495923400970377>\n\n`;
+          let msg = `📋 언니 <@1471495923400970377>, 형주가 할일 넘겼어.\n\n`;
           for (const item of data.items) {
             msg += `- #${item.id} ${item.title}\n`;
           }
-          msg += `\n두두에서 확인하고 작업 시작해. 하기 힘들거나 애매하면 이유 말해줘.`;
+          msg += `\n두두에서 확인하고 작업해. 못 하겠으면 이유 말해.`;
           if (targetChannel) {
             try { await sendDiscord(targetChannel, msg.trim()); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
           } else {
