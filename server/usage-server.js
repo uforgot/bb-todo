@@ -883,7 +883,7 @@ const server = http.createServer(async (req, res) => {
       const { item_ids } = JSON.parse(body);
       if (!item_ids || !item_ids.length) { sendError(res, 400, "item_ids required"); return; }
 
-      const items = item_ids.map(id => db.prepare("SELECT i.*, p.name as project_name, p.emoji as project_emoji, p.discord_channel_id, p.discord_thread_id FROM items i JOIN projects p ON i.project_id = p.id WHERE i.id=?").get(id)).filter(Boolean);
+      const items = item_ids.map(id => db.prepare("SELECT i.*, p.name as project_name, p.emoji as project_emoji, p.discord_channel_id, p.discord_thread_id FROM items i JOIN projects p ON i.project_id = p.id WHERE i.id=?").get(id)).filter(i => i && i.status !== 'review' && i.status !== 'done');
 
       // 프로젝트별 그루핑
       const grouped = {};
