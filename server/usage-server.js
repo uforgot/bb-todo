@@ -912,13 +912,10 @@ const server = http.createServer(async (req, res) => {
           let msg = `📋 언니 <@1471495923400970377>, 형주가 할일 넘겼어.\n\n`;
           for (const item of data.items) {
             msg += `- **#${item.id}** ${item.title}`;
-            if (item.content) {
-              const lines = item.content.split('\n').map(l => `  ${l}`).join('\n');
-              msg += `\n${lines}`;
-            }
+            if (item.content) msg += `\n  └ ${item.content.split('\n')[0]}`;
             msg += `\n`;
           }
-          msg += `\n할일빵빵에서 확인하고 작업해. 못 하겠으면 이유 말해.`;
+          msg += `\n할일빵빵에서 확인하고 작업해. 못 하겠으면 이유 말해.\n끝나면 리뷰 마킹하고 나한테 코드 리뷰 넘겨.`;
           if (targetChannel) {
             try { await sendDiscord(targetChannel, msg.trim()); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
           } else {
