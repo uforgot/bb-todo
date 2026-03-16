@@ -912,7 +912,7 @@ const server = http.createServer(async (req, res) => {
           let msg = `📋 언니 <@1471495923400970377>, 형주가 할일 넘겼어.\n\n`;
           for (const item of data.items) {
             msg += `- **#${item.id}** ${item.title}`;
-            if (item.content) msg += `\n  └ ${item.content.split('\n')[0]}`;
+            if (item.content) msg += `\n  └ ${item.content}`;
             msg += `\n`;
           }
           msg += `\n할일빵빵에서 확인하고 작업해. 못 하겠으면 이유 말해.`;
