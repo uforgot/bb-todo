@@ -404,9 +404,9 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  // Auth check for all routes
+  // Auth check (images + health exempt)
   const auth = req.headers.authorization;
-  if (auth !== `Bearer ${API_KEY}`) {
+  if (!url.pathname.startsWith("/images/") && url.pathname !== "/health" && auth !== `Bearer ${API_KEY}`) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unauthorized" }));
     return;
