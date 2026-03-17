@@ -1007,20 +1007,20 @@ const server = http.createServer(async (req, res) => {
           // raw binary upload — sharp로 리사이즈 + JPEG 변환
           const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
           const imagePath = path.join(__dirname, "images", id);
-          try {
-            const processed = await sharp(buffer)
-              .resize(1200, 1200, { fit: "inside", withoutEnlargement: true })
-              .jpeg({ quality: 80 })
-              .toBuffer();
-            fs.writeFileSync(imagePath, processed);
-            res.writeHead(201, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ id, url: `/images/${id}`, size: processed.length }));
-          } catch (sharpErr) {
-            // sharp 실패 시 원본 저장
-            fs.writeFileSync(imagePath, buffer);
-            res.writeHead(201, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ id, url: `/images/${id}`, size: buffer.length }));
-          }
+          sharp(buffer)
+            .resize(1200, 1200, { fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 80 })
+            .toBuffer()
+            .then(processed => {
+              fs.writeFileSync(imagePath, processed);
+              res.writeHead(201, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ id, url: `/images/${id}`, size: processed.length }));
+            })
+            .catch(() => {
+              fs.writeFileSync(imagePath, buffer);
+              res.writeHead(201, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ id, url: `/images/${id}`, size: buffer.length }));
+            });
         }
       });
       return;
