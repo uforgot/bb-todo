@@ -979,13 +979,32 @@ const server = http.createServer(async (req, res) => {
             "새 할일 도착. ❓ = 모름/막힘, 🙋 = 형주가 할 거",
           ];
           const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+          const send = async (text, files = []) => {
+            if (targetChannel) {
+              try { await sendDiscord(targetChannel, text.trim(), files); } catch (e) { console.error(`[assign] discord send error:`, e.message); }
+            } else {
+              const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
+              if (webhookUrl) {
+                try {
+                  await new Promise((resolve, reject) => {
+                    const whUrl = new URL(webhookUrl);
+                    const payload = JSON.stringify({ content: text.trim() });
+                    const whReq = https.request({ hostname: whUrl.hostname, path: whUrl.pathname + whUrl.search, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (whRes) => { let d = ""; whRes.on("data", c => d += c); whRes.on("end", () => resolve(d)); });
+                    whReq.on("error", reject);
+                    whReq.write(payload);
+                    whReq.end();
+                  });
+                } catch (e) { console.error("[assign] webhook error:", e.message); }
+              }
+            }
+          };
 
-          // 아이템별로 개별 메시지 전송
-          for (let idx = 0; idx < data.items.length; idx++) {
-            const item = data.items[idx];
-            let msg = "";
-            if (idx === 0) msg += `${pick(intros)}\n\n`;
-            msg += `**#${item.id}** ${item.title}`;
+          // 1. 인트로
+          await send(pick(intros));
+
+          // 2. 아이템별 메시지
+          for (const item of data.items) {
+            let msg = `**#${item.id}** ${item.title}`;
             if (item.content) {
               const textLines = item.content.split('\n')
                 .filter(l => !l.trim().startsWith('/images/'))
@@ -993,9 +1012,6 @@ const server = http.createServer(async (req, res) => {
                 .join('\n');
               if (textLines.trim()) msg += `\n${textLines}`;
             }
-            if (idx === data.items.length - 1) msg += `\n\n${pick(outros)}`;
-
-            // 이 아이템의 이미지 수집
             const files = [];
             if (item.content) {
               const imgPaths = item.content.split('\n').filter(l => l.trim().startsWith('/images/'));
@@ -1006,24 +1022,11 @@ const server = http.createServer(async (req, res) => {
                 }
               }
             }
-
-            if (targetChannel) {
-              try { await sendDiscord(targetChannel, msg.trim(), files); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
-            } else {
-              // 채널 매핑 없으면 bb-dingdong으로 fallback
-            const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
-            if (webhookUrl) {
-              try {
-                const whUrl = new URL(webhookUrl);
-                const payload = JSON.stringify({ content: msg.trim() });
-                const whReq = https.request({ hostname: whUrl.hostname, path: whUrl.pathname + whUrl.search, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (whRes) => { let d = ""; whRes.on("data", c => d += c); whRes.on("end", () => resolve(d)); });
-                whReq.on("error", (e) => console.error("[assign] webhook error:", e.message));
-                whReq.write(payload);
-                whReq.end();
-              } catch (e) { console.error("[assign] webhook error:", e.message); }
-            }
-            }
+            await send(msg, files);
           }
+
+          // 3. 아웃트로
+          await send(pick(outros));
         }
       }
 
