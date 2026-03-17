@@ -961,7 +961,7 @@ const server = http.createServer(async (req, res) => {
             if (item.content) {
               const apiBase = `https://ai.tail6603fc.ts.net`;
               const lines = item.content.split('\n').map(l => {
-                if (l.trim().startsWith('/images/')) return `  ${apiBase}${l.trim()}`;
+                if (l.trim().startsWith('/images/')) return `\n  📎 ${apiBase}${l.trim()}`;
                 return `  ${l}`;
               }).join('\n');
               msg += `\n${lines}`;
