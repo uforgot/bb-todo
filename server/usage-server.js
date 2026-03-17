@@ -12,6 +12,7 @@ const plist = require("simple-plist");
 const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
+const sharp = require("sharp");
 
 const PORT = process.env.USAGE_PORT || 3100;
 const API_KEY = process.env.USAGE_API_KEY;
@@ -1003,13 +1004,23 @@ const server = http.createServer(async (req, res) => {
           res.writeHead(201, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ id, url: `/images/${id}` }));
         } else {
-          // raw binary upload with filename query param
-          const ext = url.searchParams.get("ext") || "jpg";
-          const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+          // raw binary upload — sharp로 리사이즈 + JPEG 변환
+          const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
           const imagePath = path.join(__dirname, "images", id);
-          fs.writeFileSync(imagePath, buffer);
-          res.writeHead(201, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ id, url: `/images/${id}` }));
+          try {
+            const processed = await sharp(buffer)
+              .resize(1200, 1200, { fit: "inside", withoutEnlargement: true })
+              .jpeg({ quality: 80 })
+              .toBuffer();
+            fs.writeFileSync(imagePath, processed);
+            res.writeHead(201, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ id, url: `/images/${id}`, size: processed.length }));
+          } catch (sharpErr) {
+            // sharp 실패 시 원본 저장
+            fs.writeFileSync(imagePath, buffer);
+            res.writeHead(201, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ id, url: `/images/${id}`, size: buffer.length }));
+          }
         }
       });
       return;
