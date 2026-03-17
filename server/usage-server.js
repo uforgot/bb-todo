@@ -965,6 +965,63 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(channels));
 
+    // POST /api/images — 이미지 업로드
+    } else if (url.pathname === "/api/images" && req.method === "POST") {
+      const chunks = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        const buffer = Buffer.concat(chunks);
+        // Content-Type에서 boundary 추출
+        const contentType = req.headers["content-type"] || "";
+
+        if (contentType.includes("multipart/form-data")) {
+          // multipart 파싱 (간단 구현)
+          const boundary = contentType.split("boundary=")[1];
+          if (!boundary) { sendError(res, 400, "no boundary"); return; }
+          const parts = buffer.toString("binary").split("--" + boundary);
+          let imageData = null;
+          let filename = "image.jpg";
+          for (const part of parts) {
+            if (part.includes("Content-Type: image/")) {
+              const nameMatch = part.match(/filename="([^"]+)"/);
+              if (nameMatch) filename = nameMatch[1];
+              const headerEnd = part.indexOf("\r\n\r\n");
+              if (headerEnd !== -1) {
+                imageData = Buffer.from(part.substring(headerEnd + 4, part.length - 2), "binary");
+              }
+            }
+          }
+          if (!imageData) { sendError(res, 400, "no image data"); return; }
+          const ext = path.extname(filename) || ".jpg";
+          const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
+          const imagePath = path.join(__dirname, "images", id);
+          fs.writeFileSync(imagePath, imageData);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ id, url: `/images/${id}` }));
+        } else {
+          // raw binary upload with filename query param
+          const ext = url.searchParams.get("ext") || "jpg";
+          const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+          const imagePath = path.join(__dirname, "images", id);
+          fs.writeFileSync(imagePath, buffer);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ id, url: `/images/${id}` }));
+        }
+      });
+      return;
+
+    // GET /images/* — static serve
+    } else if (url.pathname.startsWith("/images/") && req.method === "GET") {
+      const filename = url.pathname.replace("/images/", "");
+      const filePath = path.join(__dirname, "images", filename);
+      if (!fs.existsSync(filePath)) { sendError(res, 404, "not found"); return; }
+      const ext = path.extname(filename).toLowerCase();
+      const mimeTypes = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic" };
+      const mime = mimeTypes[ext] || "application/octet-stream";
+      res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=86400" });
+      fs.createReadStream(filePath).pipe(res);
+      return;
+
     } else if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
