@@ -897,14 +897,38 @@ const server = http.createServer(async (req, res) => {
       // Discord 팡팡 봇으로 각 채널에 메시지 전송 (빵빵 봇은 자기 메시지 무시하므로 팡팡으로 전송)
       const botToken = process.env.DISCORD_PANG_TOKEN || process.env.DISCORD_BOT_TOKEN;
       if (botToken) {
-        const sendDiscord = (channelId, content) => new Promise((resolve, reject) => {
-          const payload = JSON.stringify({ content });
+        const sendDiscord = (channelId, content, files = []) => new Promise((resolve, reject) => {
+          if (files.length === 0) {
+            const payload = JSON.stringify({ content });
+            const dReq = https.request({
+              hostname: "discord.com", path: `/api/v10/channels/${channelId}/messages`, method: "POST",
+              headers: { "Authorization": `Bot ${botToken}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+            }, (dRes) => { let d = ""; dRes.on("data", c => d += c); dRes.on("end", () => resolve(d)); });
+            dReq.on("error", reject);
+            dReq.write(payload);
+            dReq.end();
+            return;
+          }
+          // multipart/form-data with files
+          const boundary = `----FormBoundary${Date.now()}`;
+          const parts = [];
+          // payload_json part
+          parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ content })}\r\n`);
+          // file parts
+          files.forEach((file, i) => {
+            parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="files[${i}]"; filename="${file.name}"\r\nContent-Type: ${file.contentType || "image/jpeg"}\r\n\r\n`);
+            parts.push(file.data);
+            parts.push(`\r\n`);
+          });
+          parts.push(`--${boundary}--\r\n`);
+          const bodyParts = parts.map(p => typeof p === "string" ? Buffer.from(p) : p);
+          const body = Buffer.concat(bodyParts);
           const dReq = https.request({
             hostname: "discord.com", path: `/api/v10/channels/${channelId}/messages`, method: "POST",
-            headers: { "Authorization": `Bot ${botToken}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+            headers: { "Authorization": `Bot ${botToken}`, "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length }
           }, (dRes) => { let d = ""; dRes.on("data", c => d += c); dRes.on("end", () => resolve(d)); });
           dReq.on("error", reject);
-          dReq.write(payload);
+          dReq.write(body);
           dReq.end();
         });
 
@@ -959,18 +983,32 @@ const server = http.createServer(async (req, res) => {
           for (const item of data.items) {
             msg += `- **#${item.id}** ${item.title}`;
             if (item.content) {
-              const apiBase = `https://ai.tail6603fc.ts.net`;
-              const lines = item.content.split('\n').map(l => {
-                if (l.trim().startsWith('/images/')) return `\n  📎 ${apiBase}${l.trim()}`;
-                return `  ${l}`;
-              }).join('\n');
+              const lines = item.content.split('\n')
+                .filter(l => !l.trim().startsWith('/images/'))
+                .map(l => `  ${l}`)
+                .join('\n');
               msg += `\n${lines}`;
             }
             msg += `\n`;
           }
           msg += `\n${pick(outros)}`;
+
+          // 이미지 파일 수집
+          const files = [];
+          for (const item of data.items) {
+            if (item.content) {
+              const imgPaths = item.content.split('\n').filter(l => l.trim().startsWith('/images/'));
+              for (const imgLine of imgPaths) {
+                const imgFile = path.join(__dirname, "images", imgLine.trim().replace('/images/', ''));
+                if (fs.existsSync(imgFile)) {
+                  files.push({ name: path.basename(imgFile), data: fs.readFileSync(imgFile), contentType: "image/jpeg" });
+                }
+              }
+            }
+          }
+
           if (targetChannel) {
-            try { await sendDiscord(targetChannel, msg.trim()); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
+            try { await sendDiscord(targetChannel, msg.trim(), files); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
           } else {
             // 채널 매핑 없으면 bb-dingdong으로 fallback
             const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
