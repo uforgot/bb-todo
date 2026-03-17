@@ -913,7 +913,11 @@ const server = http.createServer(async (req, res) => {
           for (const item of data.items) {
             msg += `- **#${item.id}** ${item.title}`;
             if (item.content) {
-              const lines = item.content.split('\n').map(l => `  ${l}`).join('\n');
+              const apiBase = `https://ai.tail6603fc.ts.net`;
+              const lines = item.content.split('\n').map(l => {
+                if (l.trim().startsWith('/images/')) return `  ${apiBase}${l.trim()}`;
+                return `  ${l}`;
+              }).join('\n');
               msg += `\n${lines}`;
             }
             msg += `\n`;
