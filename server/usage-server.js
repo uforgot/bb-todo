@@ -923,7 +923,7 @@ const server = http.createServer(async (req, res) => {
             }
             msg += `\n`;
           }
-          msg += `\n할일빵빵에서 확인하고 작업해. 못 하겠으면 이유 말해.`;
+          msg += `\n할일빵빵에서 확인하고 작업해.\n못 하겠으면 ❓, 형주가 할 거면 🔜 이모지로 리뷰 마킹해.`;
           if (targetChannel) {
             try { await sendDiscord(targetChannel, msg.trim()); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
           } else {
