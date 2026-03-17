@@ -979,38 +979,38 @@ const server = http.createServer(async (req, res) => {
             "새 할일 도착. ❓ = 모름/막힘, 🙋 = 형주가 할 거",
           ];
           const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-          let msg = `${pick(intros)}\n\n`;
-          for (const item of data.items) {
-            msg += `- **#${item.id}** ${item.title}`;
+
+          // 아이템별로 개별 메시지 전송
+          for (let idx = 0; idx < data.items.length; idx++) {
+            const item = data.items[idx];
+            let msg = "";
+            if (idx === 0) msg += `${pick(intros)}\n\n`;
+            msg += `**#${item.id}** ${item.title}`;
             if (item.content) {
-              const lines = item.content.split('\n')
+              const textLines = item.content.split('\n')
                 .filter(l => !l.trim().startsWith('/images/'))
                 .map(l => `  ${l}`)
                 .join('\n');
-              msg += `\n${lines}`;
+              if (textLines.trim()) msg += `\n${textLines}`;
             }
-            msg += `\n`;
-          }
-          msg += `\n${pick(outros)}`;
+            if (idx === data.items.length - 1) msg += `\n\n${pick(outros)}`;
 
-          // 이미지 파일 수집
-          const files = [];
-          for (const item of data.items) {
+            // 이 아이템의 이미지 수집
+            const files = [];
             if (item.content) {
               const imgPaths = item.content.split('\n').filter(l => l.trim().startsWith('/images/'));
               for (const imgLine of imgPaths) {
                 const imgFile = path.join(__dirname, "images", imgLine.trim().replace('/images/', ''));
                 if (fs.existsSync(imgFile)) {
-                  files.push({ name: path.basename(imgFile), data: fs.readFileSync(imgFile), contentType: "image/jpeg" });
+                  files.push({ name: `${item.id}_${path.basename(imgFile)}`, data: fs.readFileSync(imgFile), contentType: "image/jpeg" });
                 }
               }
             }
-          }
 
-          if (targetChannel) {
-            try { await sendDiscord(targetChannel, msg.trim(), files); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
-          } else {
-            // 채널 매핑 없으면 bb-dingdong으로 fallback
+            if (targetChannel) {
+              try { await sendDiscord(targetChannel, msg.trim(), files); } catch (e) { console.error(`[assign] discord send error (${targetChannel}):`, e.message); }
+            } else {
+              // 채널 매핑 없으면 bb-dingdong으로 fallback
             const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
             if (webhookUrl) {
               try {
@@ -1021,6 +1021,7 @@ const server = http.createServer(async (req, res) => {
                 whReq.write(payload);
                 whReq.end();
               } catch (e) { console.error("[assign] webhook error:", e.message); }
+            }
             }
           }
         }
