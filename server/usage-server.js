@@ -934,6 +934,7 @@ const server = http.createServer(async (req, res) => {
 
         for (const [proj, data] of Object.entries(grouped)) {
           const targetChannel = data.threadId || data.channelId;
+          if (!targetChannel) continue; // Discord 채널 매핑 없으면 스킵
           const intros = [
             "📋 언니 <@1471495923400970377>, 형주가 할일 넘겼어.",
             "📋 야 <@1471495923400970377> 형주가 또 너한테 일시켜",
@@ -1030,9 +1031,10 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      // 아이템 상태를 in_progress로
+      // 채널 매핑 있는 아이템만 in_progress로
+      const assignedIds = items.filter(i => i.discord_channel_id || i.discord_thread_id).map(i => i.id);
       const stmt = db.prepare("UPDATE items SET status='in_progress' WHERE id=?");
-      for (const id of item_ids) stmt.run(id);
+      for (const id of assignedIds) stmt.run(id);
       broadcastSSE("items-changed", { action: "assign" });
 
       res.writeHead(200, { "Content-Type": "application/json" });
