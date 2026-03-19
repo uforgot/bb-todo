@@ -1023,6 +1023,7 @@ const server = http.createServer(async (req, res) => {
                 }
               }
             }
+            if (files.length > 0) msg += `\n📎 첨부파일 ${files.length}개 — 꼭 확인해`;
             await send(msg, files);
           }
 
