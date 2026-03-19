@@ -773,7 +773,7 @@ const server = http.createServer(async (req, res) => {
       const updates = JSON.parse(body);
       const fields = [];
       const values = [];
-      for (const key of ["title", "content", "status", "is_today", "category_id", "review_emoji"]) {
+      for (const key of ["title", "content", "status", "is_today", "category_id", "project_id", "review_emoji"]) {
         if (updates[key] !== undefined) {
           fields.push(`${key}=?`);
           values.push(key === "is_today" ? (updates[key] ? 1 : 0) : updates[key]);
