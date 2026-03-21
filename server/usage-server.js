@@ -1038,6 +1038,54 @@ const server = http.createServer(async (req, res) => {
       for (const id of assignedIds) stmt.run(id);
       broadcastSSE("items-changed", { action: "assign" });
 
+    // POST /api/assign-self — 형주한테 시키기 (자기 리마인드)
+    } else if (url.pathname === "/api/assign-self" && req.method === "POST") {
+      const body = await parseBody(req);
+      const { item_ids } = JSON.parse(body);
+      if (!item_ids || !item_ids.length) { sendError(res, 400, "item_ids required"); return; }
+
+      const items = item_ids.map(id => db.prepare("SELECT i.*, p.name as project_name, p.emoji as project_emoji FROM items i JOIN projects p ON i.project_id = p.id WHERE i.id=?").get(id)).filter(Boolean);
+
+      const pangToken = process.env.DISCORD_PANG_TOKEN;
+      const bbDingdong = "1472134667946954894";
+
+      if (pangToken && items.length > 0) {
+        const intros = [
+          "📋 언니 <@1471495923400970377> 형주가 이거 안 해",
+          "📋 언니 <@1471495923400970377> 형주 또 미루고 있어",
+          "📋 <@1471495923400970377> 형주가 자기 할일 안 하고 우리한테만 시켜",
+          "📋 언니 <@1471495923400970377> 형주한테 좀 말해봐",
+          "📋 <@1471495923400970377> 형주 이거 해야 하는데 안 하고 있어",
+          "📋 언니 <@1471495923400970377> 형주가 또 딴짓해",
+          "📋 <@1471495923400970377> 형주 할일 쌓이고 있어...",
+          "📋 언니 <@1471495923400970377> 이거 형주가 하기로 한 건데",
+          "📋 <@1471495923400970377> 형주야 이거 직접 하기로 해놓고 뭐 해",
+          "📋 언니 <@1471495923400970377> 형주 또 게임하나봐",
+        ];
+        const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+        const sendPang = (channelId, content) => new Promise((resolve, reject) => {
+          const payload = JSON.stringify({ content });
+          const dReq = https.request({
+            hostname: "discord.com", path: `/api/v10/channels/${channelId}/messages`, method: "POST",
+            headers: { "Authorization": `Bot ${pangToken}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+          }, (dRes) => { let d = ""; dRes.on("data", c => d += c); dRes.on("end", () => resolve(d)); });
+          dReq.on("error", reject);
+          dReq.write(payload);
+          dReq.end();
+        });
+
+        let msg = `${pick(intros)}\n\n`;
+        for (const item of items) {
+          msg += `- **#${item.id}** ${item.title}\n`;
+        }
+        try { await sendPang(bbDingdong, msg.trim()); } catch (e) { console.error("[assign-self] error:", e.message); }
+      }
+
+      broadcastSSE("items-changed", { action: "assign-self" });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ assigned: items.length }));
+
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ assigned: items.length }));
 
