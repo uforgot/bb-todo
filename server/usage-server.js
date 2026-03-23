@@ -1023,7 +1023,11 @@ const server = http.createServer(async (req, res) => {
                 }
               }
             }
-            if (files.length > 0) msg += `\n📎 첨부파일 ${files.length}개 — 꼭 확인해`;
+            if (files.length > 0) {
+              msg += `\n📎 첨부파일 ${files.length}개 — 꼭 확인해`;
+              const imgPaths2 = item.content.split('\n').filter(l => l.trim().startsWith('/images/'));
+              for (const p of imgPaths2) msg += `\n  로컬: ${path.join(__dirname, "images", p.trim().replace('/images/', ''))}`;
+            }
             await send(msg, files);
           }
 
