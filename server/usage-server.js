@@ -95,6 +95,8 @@ try { db.exec("ALTER TABLE items ADD COLUMN review_count INTEGER DEFAULT 0"); } 
 try { db.exec("ALTER TABLE items ADD COLUMN is_today INTEGER DEFAULT 0"); } catch {}
 // Migration: review_emoji
 try { db.exec("ALTER TABLE items ADD COLUMN review_emoji TEXT"); } catch {}
+// Migration: owner
+try { db.exec("ALTER TABLE items ADD COLUMN owner TEXT"); } catch {}
 // Migration: discord channel mapping
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_channel_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_thread_id TEXT"); } catch {}
@@ -657,13 +659,13 @@ const server = http.createServer(async (req, res) => {
           discord_thread_id: p.discord_thread_id || null,
           items: projItems
             .filter(i => i.category_id === null)
-            .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null })),
+            .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null, owner: i.owner || null })),
           categories: projCats.map(c => ({
             id: c.id,
             name: c.name,
             items: projItems
               .filter(i => i.category_id === c.id)
-              .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null })),
+              .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null, owner: i.owner || null })),
           })),
         };
       });
@@ -755,13 +757,13 @@ const server = http.createServer(async (req, res) => {
     } else if (url.pathname.match(/^\/api\/projects\/\d+\/items$/) && req.method === "POST") {
       const projectId = parseInt(url.pathname.split("/")[3]);
       const body = await parseBody(req);
-      const { title, content, category_id, is_today } = JSON.parse(body);
+      const { title, content, category_id, is_today, owner } = JSON.parse(body);
       if (!title) { sendError(res, 400, "title required"); return; }
       const row = db.prepare(
-        `INSERT INTO items (project_id, category_id, title, content, is_today, sort_order)
-         VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM items WHERE project_id=?))
+        `INSERT INTO items (project_id, category_id, title, content, is_today, owner, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM items WHERE project_id=?))
          RETURNING *`
-      ).get(projectId, category_id || null, title, content || null, is_today ? 1 : 0, projectId);
+      ).get(projectId, category_id || null, title, content || null, is_today ? 1 : 0, owner || null, projectId);
       broadcastSSE("item-created", { id: row.id, projectId });
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
@@ -773,7 +775,7 @@ const server = http.createServer(async (req, res) => {
       const updates = JSON.parse(body);
       const fields = [];
       const values = [];
-      for (const key of ["title", "content", "status", "is_today", "category_id", "project_id", "review_emoji"]) {
+      for (const key of ["title", "content", "status", "is_today", "category_id", "project_id", "review_emoji", "owner"]) {
         if (updates[key] !== undefined) {
           fields.push(`${key}=?`);
           values.push(key === "is_today" ? (updates[key] ? 1 : 0) : updates[key]);
