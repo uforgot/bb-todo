@@ -26,6 +26,16 @@ export interface ClaudeSummary {
   last_updated: string;
 }
 
+export interface CodexQuotaSummary {
+  provider: string;
+  plan: string | null;
+  five_hour_left_percent: number | null;
+  five_hour_reset_in: string | null;
+  week_left_percent: number | null;
+  week_reset_in: string | null;
+  source: string;
+}
+
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 export function useClaudeUsage() {
@@ -53,6 +63,22 @@ export function useKimiUsage() {
 
   return {
     kimi: data?.kimi ?? null,
+    timestamp: data?.timestamp ?? null,
+    isLoading,
+    isError: !!error,
+    refresh: () => mutate(),
+  };
+}
+
+export function useCodexQuota() {
+  const { data, error, isLoading, mutate } = useSWR<{ codexQuota: CodexQuotaSummary; timestamp: string }>(
+    "/api/usage/codex",
+    fetcher,
+    { revalidateOnFocus: false, dedupingInterval: 60000 }
+  );
+
+  return {
+    codexQuota: data?.codexQuota ?? null,
     timestamp: data?.timestamp ?? null,
     isLoading,
     isError: !!error,

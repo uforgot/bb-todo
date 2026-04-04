@@ -17,6 +17,7 @@ const sharp = require("sharp");
 const PORT = process.env.USAGE_PORT || 3100;
 const API_KEY = process.env.USAGE_API_KEY;
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY;
+const OPENAI_ADMIN_API_KEY = process.env.OPENAI_ADMIN_API_KEY;
 const CRON_JOBS_PATH = process.env.CRON_JOBS_PATH || path.join(require("os").homedir(), ".openclaw/cron/jobs.json");
 const CRON_POLL_INTERVAL = parseInt(process.env.CRON_POLL_INTERVAL || "300000"); // 5 min
 const DB_PATH = process.env.CRON_DB_PATH || path.join(__dirname, "cron.db");
@@ -360,6 +361,120 @@ function getKimiBalance() {
   });
 }
 
+// --- OpenClaw/Codex quota snapshot ---
+function getOpenClawCodexQuota() {
+  try {
+    const output = execSync("openclaw status --usage", {
+      encoding: "utf8",
+      timeout: 15000,
+      env: { ...process.env, NO_COLOR: "1", CLICOLOR: "0", FORCE_COLOR: "0" },
+    });
+
+    const providerMatch = output.match(/Codex \(([^)]+)\)/i);
+    const fiveHourMatch = output.match(/5h:\s*(\d+)% left\s*·\s*resets\s*([^\n]+)/i);
+    const weekMatch = output.match(/Week:\s*(\d+)% left\s*·\s*resets\s*([^\n]+)/i);
+
+    if (!providerMatch && !fiveHourMatch && !weekMatch) return null;
+
+    return {
+      provider: "codex",
+      plan: providerMatch?.[1] || null,
+      five_hour_left_percent: fiveHourMatch ? parseInt(fiveHourMatch[1], 10) : null,
+      five_hour_reset_in: fiveHourMatch?.[2]?.trim() || null,
+      week_left_percent: weekMatch ? parseInt(weekMatch[1], 10) : null,
+      week_reset_in: weekMatch?.[2]?.trim() || null,
+      source: "openclaw status --usage",
+    };
+  } catch (e) {
+    console.error("OpenClaw Codex quota error:", e.message);
+    return null;
+  }
+}
+
+// --- OpenAI Usage / Cost API ---
+function httpsJson({ hostname, path, method = "GET", headers = {}, timeout = 15000 }) {
+  return new Promise((resolve) => {
+    const req = https.request({ hostname, path, method, headers, timeout }, (res) => {
+      let body = "";
+      res.on("data", (c) => (body += c));
+      res.on("end", () => {
+        try {
+          resolve({ status: res.statusCode, data: JSON.parse(body), raw: body });
+        } catch (e) {
+          resolve({ status: res.statusCode, data: null, raw: body, parseError: e.message });
+        }
+      });
+    });
+    req.on("error", (e) => resolve({ status: 0, data: null, raw: "", error: e.message }));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({ status: 0, data: null, raw: "", error: "timeout" });
+    });
+    req.end();
+  });
+}
+
+async function getOpenAIUsage() {
+  if (!OPENAI_ADMIN_API_KEY) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60;
+
+  const [usageRes, costRes] = await Promise.all([
+    httpsJson({
+      hostname: "api.openai.com",
+      path: `/v1/organization/usage/completions?start_time=${sevenDaysAgo}&bucket_width=1d`,
+      headers: {
+        Authorization: `Bearer ${OPENAI_ADMIN_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+    }),
+    httpsJson({
+      hostname: "api.openai.com",
+      path: `/v1/organization/costs?start_time=${sevenDaysAgo}&bucket_width=1d`,
+      headers: {
+        Authorization: `Bearer ${OPENAI_ADMIN_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+    }),
+  ]);
+
+  const usageBuckets = usageRes?.data?.data || [];
+  const costBuckets = costRes?.data?.data || [];
+
+  const usageTotals = usageBuckets.reduce(
+    (acc, bucket) => {
+      for (const item of bucket.results || []) {
+        acc.input_tokens += item.input_tokens || 0;
+        acc.output_tokens += item.output_tokens || 0;
+        acc.input_cached_tokens += item.input_cached_tokens || 0;
+        acc.num_model_requests += item.num_model_requests || 0;
+      }
+      return acc;
+    },
+    { input_tokens: 0, output_tokens: 0, input_cached_tokens: 0, num_model_requests: 0 }
+  );
+
+  const totalCostUsd = costBuckets.reduce((acc, bucket) => {
+    for (const item of bucket.results || []) {
+      acc += item.amount?.value || 0;
+    }
+    return acc;
+  }, 0);
+
+  return {
+    status: usageRes.status === 200 && costRes.status === 200 ? "ok" : "partial",
+    usage_api_status: usageRes.status,
+    cost_api_status: costRes.status,
+    last_7d_input_tokens: usageTotals.input_tokens,
+    last_7d_output_tokens: usageTotals.output_tokens,
+    last_7d_cached_input_tokens: usageTotals.input_cached_tokens,
+    last_7d_requests: usageTotals.num_model_requests,
+    last_7d_cost_usd: totalCostUsd,
+    note: "Organization Usage/Cost API totals. Codex quota/usage panel may still expose additional plan-specific views.",
+  };
+}
+
 // --- HTTP Server ---
 // Helper functions
 function parseBody(req) {
@@ -432,12 +547,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/usage" || url.pathname === "/usage/") {
-      const [claude, kimi] = await Promise.all([
+      const [claude, kimi, openai, codexQuota] = await Promise.all([
         getClaudeUsage(),
         getKimiBalance(),
+        getOpenAIUsage(),
+        Promise.resolve(getOpenClawCodexQuota()),
       ]);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ claude, kimi, timestamp: new Date().toISOString() }));
+      res.end(JSON.stringify({ claude, kimi, openai, codexQuota, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/claude") {
       const claude = getClaudeUsage();
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -446,6 +563,14 @@ const server = http.createServer(async (req, res) => {
       const kimi = await getKimiBalance();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ kimi, timestamp: new Date().toISOString() }));
+    } else if (url.pathname === "/usage/openai") {
+      const openai = await getOpenAIUsage();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ openai, timestamp: new Date().toISOString() }));
+    } else if (url.pathname === "/usage/codex") {
+      const codexQuota = getOpenClawCodexQuota();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ codexQuota, timestamp: new Date().toISOString() }));
 
     // --- Cron Jobs API ---
     } else if (url.pathname === "/cron-jobs" && req.method === "GET") {

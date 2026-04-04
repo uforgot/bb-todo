@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useClaudeUsage, useKimiUsage, type ClaudeSummary, type KimiSummary } from "@/hooks/use-usage";
+import { useClaudeUsage, useKimiUsage, useCodexQuota, type ClaudeSummary, type KimiSummary, type CodexQuotaSummary } from "@/hooks/use-usage";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
@@ -160,6 +160,53 @@ function ClaudeCard({ summary, onRefresh, isRefreshing }: { summary: ClaudeSumma
   );
 }
 
+function CodexCard({ summary, timestamp, onRefresh, isRefreshing }: { summary: CodexQuotaSummary; timestamp: string | null; onRefresh: () => void; isRefreshing: boolean }) {
+  const fiveUsed = summary.five_hour_left_percent != null ? 100 - summary.five_hour_left_percent : null;
+  const weekUsed = summary.week_left_percent != null ? 100 - summary.week_left_percent : null;
+  const fiveColor = getBarColor(fiveUsed ?? 0);
+  const weekColor = getBarColor(weekUsed ?? 0, "bg-green-500");
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <span className="text-base font-semibold">Codex</span>
+        <Badge variant="secondary" className="text-xs">{summary.plan || "quota"}</Badge>
+      </div>
+
+      <div className="space-y-3">
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium">5시간 quota</p>
+          <p className="text-xs text-muted-foreground">{summary.five_hour_reset_in || "-"}</p>
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <ProgressBar percentage={fiveUsed ?? 0} color={fiveColor} />
+            </div>
+            <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.five_hour_left_percent ?? "-"}% 남음</span>
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium">주간 quota</p>
+          <p className="text-xs text-muted-foreground">{summary.week_reset_in || "-"}</p>
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <ProgressBar percentage={weekUsed ?? 0} color={weekColor} />
+            </div>
+            <span className="text-xs text-muted-foreground whitespace-nowrap">{summary.week_left_percent ?? "-"}% 남음</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="pt-1 border-t border-border/30 flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          마지막 업데이트: {timestamp ? formatRelativeTime(timestamp) : "-"}
+        </p>
+        <RefreshButton onClick={onRefresh} isRefreshing={isRefreshing} />
+      </div>
+    </div>
+  );
+}
+
 function KimiCard({ summary, timestamp, onRefresh, isRefreshing }: { summary: KimiSummary; timestamp: string | null; onRefresh: () => void; isRefreshing: boolean }) {
   return (
     <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-4">
@@ -185,9 +232,11 @@ function KimiCard({ summary, timestamp, onRefresh, isRefreshing }: { summary: Ki
 
 export function UsageSection() {
   const { claude, timestamp: claudeTs, isLoading: claudeLoading, isError: claudeError, refresh: refreshClaude } = useClaudeUsage();
+  const { codexQuota, timestamp: codexTs, isLoading: codexLoading, isError: codexError, refresh: refreshCodex } = useCodexQuota();
   const { kimi, timestamp: kimiTs, isLoading: kimiLoading, isError: kimiError, refresh: refreshKimi } = useKimiUsage();
 
   const [claudeRefreshing, setClaudeRefreshing] = useState(false);
+  const [codexRefreshing, setCodexRefreshing] = useState(false);
   const [kimiRefreshing, setKimiRefreshing] = useState(false);
 
   const handleClaudeRefresh = async () => {
@@ -196,21 +245,27 @@ export function UsageSection() {
     setTimeout(() => setClaudeRefreshing(false), 500);
   };
 
+  const handleCodexRefresh = async () => {
+    setCodexRefreshing(true);
+    await refreshCodex();
+    setTimeout(() => setCodexRefreshing(false), 500);
+  };
+
   const handleKimiRefresh = async () => {
     setKimiRefreshing(true);
     await refreshKimi();
     setTimeout(() => setKimiRefreshing(false), 500);
   };
 
-  const isLoading = claudeLoading || kimiLoading;
-  const bothError = claudeError && kimiError;
-  const hasData = claude || kimi;
+  const isLoading = claudeLoading || codexLoading || kimiLoading;
+  const bothError = claudeError && codexError && kimiError;
+  const hasData = claude || codexQuota || kimi;
 
   return (
     <div className="max-w-2xl mx-auto py-2 px-2">
       {isLoading && (
         <div className="space-y-2">
-          {[1, 2].map((i) => (
+          {[1, 2, 3].map((i) => (
             <Skeleton key={i} className="h-48 w-full rounded-lg" />
           ))}
         </div>
@@ -230,6 +285,7 @@ export function UsageSection() {
 
       {!isLoading && (
         <div className="space-y-2">
+          {codexQuota && <CodexCard summary={codexQuota} timestamp={codexTs} onRefresh={handleCodexRefresh} isRefreshing={codexRefreshing} />}
           {claude && <ClaudeCard summary={claude} onRefresh={handleClaudeRefresh} isRefreshing={claudeRefreshing} />}
           {kimi && <KimiCard summary={kimi} timestamp={kimiTs} onRefresh={handleKimiRefresh} isRefreshing={kimiRefreshing} />}
         </div>
