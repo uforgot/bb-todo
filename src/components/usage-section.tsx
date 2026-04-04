@@ -170,7 +170,7 @@ function CodexCard({ summary, timestamp, onRefresh, isRefreshing }: { summary: C
     <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-4">
       <div className="flex items-center justify-between">
         <span className="text-base font-semibold">Codex</span>
-        <Badge variant="secondary" className="text-xs">{summary.plan || "quota"}</Badge>
+        <Badge variant="secondary" className="text-xs">{(summary.plan || "quota").replace(/\s*\(\$[\d.,]+\)$/, "")}</Badge>
       </div>
 
       <div className="space-y-3">
