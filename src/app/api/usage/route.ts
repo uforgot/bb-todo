@@ -1,23 +1,10 @@
 import { NextResponse } from "next/server";
-
-const USAGE_API_URL =
-  process.env.USAGE_API_URL || "https://ai.tail6603fc.ts.net/usage";
-const USAGE_API_KEY = process.env.USAGE_API_KEY || "";
+import { fetchUsagePath } from "./shared";
 
 export async function GET() {
   try {
-    const res = await fetch(USAGE_API_URL, {
-      headers: { Authorization: `Bearer ${USAGE_API_KEY}` },
-      cache: "no-store",
-    });
+    const live = await fetchUsagePath("/usage");
 
-    if (!res.ok) {
-      throw new Error(`Usage API error: ${res.status}`);
-    }
-
-    const live = await res.json();
-
-    // Adapt to existing frontend shape
     return NextResponse.json({
       logs: [],
       summary: {
@@ -31,6 +18,9 @@ export async function GET() {
             }
           : null,
       },
+      codexQuota: live.codexQuota ?? null,
+      claude: live.claude ?? null,
+      kimi: live.kimi ?? null,
       timestamp: live.timestamp ?? new Date().toISOString(),
     });
   } catch (error) {
