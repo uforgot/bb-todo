@@ -8,7 +8,6 @@ export async function GET() {
     return NextResponse.json({
       logs: [],
       summary: {
-        claude: live.claude ?? null,
         kimi: live.kimi
           ? {
               current_balance: live.kimi.current_balance,
@@ -19,7 +18,6 @@ export async function GET() {
           : null,
       },
       codexQuota: live.codexQuota ?? null,
-      claude: live.claude ?? null,
       kimi: live.kimi ?? null,
       timestamp: live.timestamp ?? new Date().toISOString(),
     });
