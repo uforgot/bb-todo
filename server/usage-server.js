@@ -17,6 +17,7 @@ const sharp = require("sharp");
 const PORT = process.env.USAGE_PORT || 3100;
 const API_KEY = process.env.USAGE_API_KEY;
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY;
+const ANTHROPIC_ADMIN_API_KEY = process.env.ANTHROPIC_ADMIN_API_KEY;
 const OPENAI_ADMIN_API_KEY = process.env.OPENAI_ADMIN_API_KEY;
 const CRON_JOBS_PATH = process.env.CRON_JOBS_PATH || path.join(require("os").homedir(), ".openclaw/cron/jobs.json");
 const CRON_POLL_INTERVAL = parseInt(process.env.CRON_POLL_INTERVAL || "300000"); // 5 min
@@ -261,8 +262,8 @@ pollCronJobs();
 setInterval(pollCronJobs, CRON_POLL_INTERVAL);
 console.log(`✅ Cron poller started (interval: ${CRON_POLL_INTERVAL / 1000}s, source: ${CRON_JOBS_PATH})`);
 
-// --- Claude Usage (macOS plist) ---
-function getClaudeUsage() {
+// --- Claude Usage (macOS plist / Anthropic Usage API) ---
+function getClaudeUsageFromPlist() {
   try {
     const plistPath = "/tmp/claude-usage-prefs.plist";
     execSync(
@@ -295,6 +296,7 @@ function getClaudeUsage() {
 
     return {
       plan: "Max",
+      source: "local-plist",
       weekly_tokens_used: cu.weeklyTokensUsed || 0,
       weekly_limit: cu.weeklyLimit || 0,
       weekly_percentage: cu.weeklyPercentage || 0,
@@ -308,9 +310,75 @@ function getClaudeUsage() {
       last_updated: lastUpdated.toISOString(),
     };
   } catch (e) {
-    console.error("Claude usage error:", e.message);
+    console.error("Claude plist usage error:", e.message);
     return null;
   }
+}
+
+async function getClaudeUsageFromApi() {
+  if (!ANTHROPIC_ADMIN_API_KEY) return null;
+
+  const endingAt = new Date().toISOString();
+  const startingAt = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const path = `/v1/organizations/usage_report/messages?starting_at=${encodeURIComponent(startingAt)}&ending_at=${encodeURIComponent(endingAt)}&bucket_width=1d&group_by[]=model`;
+
+  const res = await httpsJson({
+    hostname: 'api.anthropic.com',
+    path,
+    headers: {
+      'x-api-key': ANTHROPIC_ADMIN_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    timeout: 15000,
+  });
+
+  if (res.status !== 200 || !res.data) {
+    console.error('Claude API usage error:', res.status, res.error || res.parseError || 'unknown');
+    return null;
+  }
+
+  const buckets = res.data.data || [];
+  let totalInput = 0;
+  let totalOutput = 0;
+  let sonnet = 0;
+  let opus = 0;
+
+  for (const bucket of buckets) {
+    for (const item of bucket.results || []) {
+      const input = item.input_tokens || 0;
+      const output = item.output_tokens || 0;
+      const total = input + output;
+      totalInput += input;
+      totalOutput += output;
+      const model = String(item.model || '').toLowerCase();
+      if (model.includes('sonnet')) sonnet += total;
+      if (model.includes('opus')) opus += total;
+    }
+  }
+
+  const total = totalInput + totalOutput;
+  return {
+    plan: 'API',
+    source: 'anthropic-usage-api',
+    weekly_tokens_used: total,
+    weekly_limit: 0,
+    weekly_percentage: 0,
+    sonnet_weekly_tokens_used: sonnet,
+    sonnet_weekly_percentage: 0,
+    opus_weekly_tokens_used: opus,
+    opus_weekly_percentage: 0,
+    session_percentage: 0,
+    session_reset_time: new Date().toISOString(),
+    weekly_reset_time: endingAt,
+    last_updated: new Date().toISOString(),
+  };
+}
+
+async function getClaudeUsage() {
+  const apiUsage = await getClaudeUsageFromApi();
+  if (apiUsage) return apiUsage;
+  return getClaudeUsageFromPlist();
 }
 
 // --- Kimi Balance (Moonshot API) ---
@@ -362,33 +430,59 @@ function getKimiBalance() {
 }
 
 // --- OpenClaw/Codex quota snapshot ---
-function getOpenClawCodexQuota() {
-  try {
-    const output = execSync("openclaw status --usage", {
-      encoding: "utf8",
-      timeout: 15000,
-      env: { ...process.env, NO_COLOR: "1", CLICOLOR: "0", FORCE_COLOR: "0" },
-    });
+const CODEX_QUOTA_CACHE_TTL_MS = 60 * 1000;
+let codexQuotaCache = {
+  value: null,
+  fetchedAt: 0,
+  inflight: null,
+};
 
-    const providerMatch = output.match(/Codex \(([^)]+)\)/i);
-    const fiveHourMatch = output.match(/5h:\s*(\d+)% left\s*·\s*resets\s*([^\n]+)/i);
-    const weekMatch = output.match(/Week:\s*(\d+)% left\s*·\s*resets\s*([^\n]+)/i);
-
-    if (!providerMatch && !fiveHourMatch && !weekMatch) return null;
-
-    return {
-      provider: "codex",
-      plan: providerMatch?.[1] || null,
-      five_hour_left_percent: fiveHourMatch ? parseInt(fiveHourMatch[1], 10) : null,
-      five_hour_reset_in: fiveHourMatch?.[2]?.trim() || null,
-      week_left_percent: weekMatch ? parseInt(weekMatch[1], 10) : null,
-      week_reset_in: weekMatch?.[2]?.trim() || null,
-      source: "openclaw status --usage",
-    };
-  } catch (e) {
-    console.error("OpenClaw Codex quota error:", e.message);
-    return null;
+async function getOpenClawCodexQuota() {
+  const now = Date.now();
+  if (codexQuotaCache.value && now - codexQuotaCache.fetchedAt < CODEX_QUOTA_CACHE_TTL_MS) {
+    return codexQuotaCache.value;
   }
+
+  if (codexQuotaCache.inflight) {
+    return codexQuotaCache.inflight;
+  }
+
+  codexQuotaCache.inflight = (async () => {
+    try {
+      const output = execSync("openclaw status --usage", {
+        encoding: "utf8",
+        timeout: 15000,
+        env: { ...process.env, NO_COLOR: "1", CLICOLOR: "0", FORCE_COLOR: "0" },
+      });
+
+      const providerMatch = output.match(/Codex \(([^)]+)\)/i);
+      const fiveHourMatch = output.match(/5h:\s*(\d+)% left\s*·\s*resets\s*([^\n]+)/i);
+      const weekMatch = output.match(/Week:\s*(\d+)% left\s*·\s*resets\s*([^\n]+)/i);
+
+      if (!providerMatch && !fiveHourMatch && !weekMatch) return null;
+
+      const value = {
+        provider: "codex",
+        plan: providerMatch?.[1] || null,
+        five_hour_left_percent: fiveHourMatch ? parseInt(fiveHourMatch[1], 10) : null,
+        five_hour_reset_in: fiveHourMatch?.[2]?.trim() || null,
+        week_left_percent: weekMatch ? parseInt(weekMatch[1], 10) : null,
+        week_reset_in: weekMatch?.[2]?.trim() || null,
+        source: "openclaw status --usage (cached 60s)",
+      };
+
+      codexQuotaCache.value = value;
+      codexQuotaCache.fetchedAt = Date.now();
+      return value;
+    } catch (e) {
+      console.error("OpenClaw Codex quota error:", e.message);
+      return codexQuotaCache.value || null;
+    } finally {
+      codexQuotaCache.inflight = null;
+    }
+  })();
+
+  return codexQuotaCache.inflight;
 }
 
 // --- OpenAI Usage / Cost API ---
@@ -551,7 +645,7 @@ const server = http.createServer(async (req, res) => {
         getClaudeUsage(),
         getKimiBalance(),
         getOpenAIUsage(),
-        Promise.resolve(getOpenClawCodexQuota()),
+        getOpenClawCodexQuota(),
       ]);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ claude, kimi, openai, codexQuota, timestamp: new Date().toISOString() }));
@@ -568,7 +662,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ openai, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/codex") {
-      const codexQuota = getOpenClawCodexQuota();
+      const codexQuota = await getOpenClawCodexQuota();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ codexQuota, timestamp: new Date().toISOString() }));
 
@@ -916,6 +1010,17 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
 
+    // PATCH /api/items/:id/owner — 아이템 담당자 전용 수정
+    } else if (url.pathname.match(/^\/api\/items\/\d+\/owner$/) && req.method === "PATCH") {
+      const id = parseInt(url.pathname.split("/")[3]);
+      const body = await parseBody(req);
+      const { owner } = JSON.parse(body);
+      db.prepare("UPDATE items SET owner=? WHERE id=?").run(owner ?? null, id);
+      const row = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      broadcastSSE("item-updated", { id, projectId: row?.project_id });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(row));
+
     // DELETE /api/items/:id — 아이템 삭제
     } else if (url.pathname.match(/^\/api\/items\/\d+$/) && req.method === "DELETE") {
       const id = parseInt(url.pathname.split("/").pop());
@@ -1062,51 +1167,6 @@ const server = http.createServer(async (req, res) => {
         for (const [proj, data] of Object.entries(grouped)) {
           const targetChannel = data.threadId || data.channelId;
           if (!targetChannel) continue; // Discord 채널 매핑 없으면 스킵
-          const intros = [
-            "📋 언니, 형주가 할일 넘겼어. <@1471495923400970377>",
-            "📋 야 형주가 또 너한테 일시켜 <@1471495923400970377>",
-            "📋 형주 일어났나보다 이거 하래 <@1471495923400970377>",
-            "📋 언니 언니~~~ 이거 한번 봐봐 (형주가 시킴) <@1471495923400970377>",
-            "📋 형주한테 택배 왔어 <@1471495923400970377>",
-            "📋 언니 형주가 또 뭐 하래 <@1471495923400970377>",
-            "📋 할일 도착이요~ <@1471495923400970377>",
-            "📋 야 일거리 왔다 <@1471495923400970377>",
-            "📋 형주가 이거 급하대 (매번 급하다고 함) <@1471495923400970377>",
-            "📋 언니 또 왔어... 형주 할일... <@1471495923400970377>",
-            "📋 배달 왔습니다 (발신: 형주) <@1471495923400970377>",
-            "📋 형주가 슬쩍 놓고 갔어 <@1471495923400970377>",
-            "📋 언니 형주가 이거 해달래 ㅋㅋ <@1471495923400970377>",
-            "📋 형주 접수건이요 <@1471495923400970377>",
-            "📋 야 형주가 또... (한숨) <@1471495923400970377>",
-            "📋 할일 입금됐어 <@1471495923400970377>",
-            "📋 언니 형주가 열일하네 이거 봐 <@1471495923400970377>",
-            "📋 오늘도 평화로운 할일 배달 <@1471495923400970377>",
-            "📋 형주가 이거 안 하면 잠 못 잔대 <@1471495923400970377>",
-            "📋 언니 형주 또 아이디어 떠올렸나봐 <@1471495923400970377>",
-          ];
-          const outros = [
-            "할일빵빵에서 확인하고 작업해.\n못 하겠으면 ❓, 형주가 할 거면 🙋 이모지로 리뷰 마킹해.",
-            "확인하고 처리해줘. 못 하면 ❓, 형주 몫이면 🙋",
-            "ㄱㄱ. 막히면 ❓ 달고, 형주가 할 거면 🙋",
-            "부탁해~ 모르겠으면 ❓, 형주한테 넘길 거면 🙋",
-            "처리 가능하면 해주고, 아니면 ❓ 달아줘. 형주 건이면 🙋",
-            "언니 화이팅. 못 하겠으면 ❓, 형주 직접 할 거면 🙋",
-            "할일빵빵 확인하고 해줘~ ❓ = 모름, 🙋 = 형주가 함",
-            "한번 봐주라. 안 되면 ❓, 형주가 할 거면 🙋",
-            "확인 부탁. 막히면 ❓ 마킹, 형주 건이면 🙋 마킹",
-            "할일빵빵에서 상세 보고 ㄱㄱ. ❓ = 못함, 🙋 = 형주",
-            "처리해주면 고맙고. 못 하면 ❓, 형주가 하면 🙋",
-            "바쁘겠지만 부탁해. ❓ 또는 🙋 마킹 잊지 마",
-            "일단 봐봐. 가능하면 작업, 아니면 ❓🙋 마킹",
-            "형주가 믿고 맡기는 거야. 못 하면 솔직히 ❓, 형주 건이면 🙋",
-            "오늘도 수고~ ❓ = 확인 필요, 🙋 = 형주가 직접",
-            "확인하고 할 수 있는 건 해줘. ❓ / 🙋 마킹 필수",
-            "할빵 확인 → 작업 → 리뷰. 못 하면 ❓, 형주 건 🙋",
-            "ㄱㄱ해~ 판단 안 되면 ❓, 형주한테 돌릴 거면 🙋",
-            "언니 잘 부탁해요. 안 되는 건 ❓, 형주꺼면 🙋",
-            "새 할일 도착. ❓ = 모름/막힘, 🙋 = 형주가 할 거",
-          ];
-          const pick = arr => arr[Math.floor(Math.random() * arr.length)];
           const send = async (text, files = []) => {
             if (targetChannel) {
               try { await sendDiscord(targetChannel, text.trim(), files); } catch (e) { console.error(`[assign] discord send error:`, e.message); }
@@ -1127,22 +1187,26 @@ const server = http.createServer(async (req, res) => {
             }
           };
 
-          // 1. 인트로
-          await send(pick(intros));
+          const files = [];
+          const lines = [
+            `📋 할일빵빵에서 형주가 시켰어`,
+            `프로젝트: ${proj}`,
+            `items:`
+          ];
 
-          // 2. 아이템별 메시지
           for (const item of data.items) {
-            let msg = `**#${item.id}** ${item.title}`;
+            lines.push(`- #${item.id} ${item.title}`);
             if (item.content) {
               const textLines = item.content.split('\n')
                 .filter(l => !l.trim().startsWith('/images/'))
-                .map(l => `  ${l}`)
-                .join('\n');
-              if (textLines.trim()) msg += `\n${textLines}`;
+                .map(l => l.trim())
+                .filter(Boolean);
+              for (const line of textLines) lines.push(`  ${line}`);
             }
-            const files = [];
+
             if (item.content) {
               const imgPaths = item.content.split('\n').filter(l => l.trim().startsWith('/images/'));
+              if (imgPaths.length > 0) lines.push(`  📎 첨부파일 ${imgPaths.length}개`);
               for (const imgLine of imgPaths) {
                 const imgFile = path.join(__dirname, "images", imgLine.trim().replace('/images/', ''));
                 if (fs.existsSync(imgFile)) {
@@ -1150,16 +1214,13 @@ const server = http.createServer(async (req, res) => {
                 }
               }
             }
-            if (files.length > 0) {
-              msg += `\n📎 첨부파일 ${files.length}개 — 꼭 확인해`;
-              const imgPaths2 = item.content.split('\n').filter(l => l.trim().startsWith('/images/'));
-              for (const p of imgPaths2) msg += `\n  로컬: ${path.join(__dirname, "images", p.trim().replace('/images/', ''))}`;
-            }
-            await send(msg, files);
           }
 
-          // 3. 아웃트로
-          await send(pick(outros));
+          lines.push('');
+          lines.push('할일빵빵에서 확인하고 작업해. 못 하겠으면 ❓, 형주가 할 거면 🙋 이모지로 리뷰 마킹해.');
+          lines.push('<@1471495923400970377>');
+
+          await send(lines.join('\n'), files);
         }
       }
 
