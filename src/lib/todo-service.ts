@@ -231,23 +231,6 @@ export async function createCategory(projectId: number, input: { name: string })
   return data;
 }
 
-export async function createProject(input: { emoji?: string | null; name: string; priority?: number | null }) {
-  const supabaseAdmin = getSupabaseAdmin();
-  const { data, error } = await supabaseAdmin
-    .from("projects")
-    .insert({
-      emoji: input.emoji ?? null,
-      name: input.name,
-      priority: input.priority ?? 99,
-      status: "active",
-    })
-    .select("id, name, emoji, priority")
-    .single();
-
-  if (error) throw error;
-  return data;
-}
-
 export async function updateProject(id: number, updates: Record<string, unknown>) {
   const supabaseAdmin = getSupabaseAdmin();
   const payload: Record<string, unknown> = {};
