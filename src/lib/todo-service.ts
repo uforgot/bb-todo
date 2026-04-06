@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "./supabase-admin";
+import { getSupabaseAdmin } from "./supabase-admin";
 import type {
   ArchiveProjectDTO,
   ArchiveResponseDTO,
@@ -68,6 +68,7 @@ function buildProjectsTree(projects: ProjectRow[], categories: CategoryRow[], it
 }
 
 export async function listActiveProjectsTree(): Promise<TodoProjectDTO[]> {
+  const supabaseAdmin = getSupabaseAdmin();
   const [{ data: projects, error: projectsError }, { data: categories, error: categoriesError }, { data: items, error: itemsError }] = await Promise.all([
     supabaseAdmin
       .from("projects")
@@ -97,6 +98,7 @@ export async function listActiveProjectsTree(): Promise<TodoProjectDTO[]> {
 }
 
 export async function listArchivedProjectsTree(): Promise<ArchiveResponseDTO> {
+  const supabaseAdmin = getSupabaseAdmin();
   const [{ data: projects, error: projectsError }, { data: categories, error: categoriesError }, { data: items, error: itemsError }] = await Promise.all([
     supabaseAdmin
       .from("projects")
@@ -154,6 +156,7 @@ export async function listArchivedProjectsTree(): Promise<ArchiveResponseDTO> {
 }
 
 export async function updateItem(id: number, updates: Record<string, unknown>) {
+  const supabaseAdmin = getSupabaseAdmin();
   const payload: Record<string, unknown> = {};
   for (const key of ["title", "content", "status", "is_today", "category_id", "project_id", "review_emoji", "owner"]) {
     if (updates[key] !== undefined) payload[key] = updates[key];
@@ -195,6 +198,7 @@ export async function createItem(projectId: number, input: {
   is_today?: boolean;
   owner?: string | null;
 }) {
+  const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("items")
     .insert({
@@ -213,6 +217,7 @@ export async function createItem(projectId: number, input: {
 }
 
 export async function createCategory(projectId: number, input: { name: string }) {
+  const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("categories")
     .insert({
@@ -227,6 +232,7 @@ export async function createCategory(projectId: number, input: { name: string })
 }
 
 export async function updateProject(id: number, updates: Record<string, unknown>) {
+  const supabaseAdmin = getSupabaseAdmin();
   const payload: Record<string, unknown> = {};
   for (const key of ["emoji", "name", "priority", "status", "color", "discord_channel_id", "discord_thread_id"]) {
     if (updates[key] !== undefined) payload[key] = updates[key];
@@ -248,6 +254,7 @@ export async function updateProject(id: number, updates: Record<string, unknown>
 }
 
 export async function reorderProjects(order: number[]) {
+  const supabaseAdmin = getSupabaseAdmin();
   for (const [index, id] of order.entries()) {
     const { error } = await supabaseAdmin.from("projects").update({ sort_order: index }).eq("id", id);
     if (error) throw error;
@@ -256,12 +263,14 @@ export async function reorderProjects(order: number[]) {
 }
 
 export async function deleteProject(id: number) {
+  const supabaseAdmin = getSupabaseAdmin();
   const { error } = await supabaseAdmin.from("projects").delete().eq("id", id);
   if (error) throw error;
   return { ok: true };
 }
 
 export async function updateItemOwner(id: number, owner: string | null) {
+  const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("items")
     .update({ owner })
@@ -274,12 +283,14 @@ export async function updateItemOwner(id: number, owner: string | null) {
 }
 
 export async function deleteItem(id: number) {
+  const supabaseAdmin = getSupabaseAdmin();
   const { error } = await supabaseAdmin.from("items").delete().eq("id", id);
   if (error) throw error;
   return { ok: true };
 }
 
 export async function untodayAll(doneOnly = false) {
+  const supabaseAdmin = getSupabaseAdmin();
   let query = supabaseAdmin.from("items").update({ is_today: false }).eq("is_today", true);
   if (doneOnly) query = query.eq("status", "done");
   const { data, error } = await query.select("id");
@@ -288,6 +299,7 @@ export async function untodayAll(doneOnly = false) {
 }
 
 export async function clearDone(projectId: number) {
+  const supabaseAdmin = getSupabaseAdmin();
   const { count, error: countError } = await supabaseAdmin
     .from("items")
     .select("id", { count: "exact", head: true })
