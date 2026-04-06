@@ -430,45 +430,62 @@ function getKimiBalance() {
 }
 
 // --- OpenClaw/Codex quota snapshot ---
-const CODEX_QUOTA_CACHE_TTL_MS = 60 * 1000;
 let codexQuotaCache = {
   value: null,
   fetchedAt: 0,
   inflight: null,
 };
 
+function formatResetRemaining(targetMs, now = Date.now()) {
+  if (!targetMs) return null;
+  const diffMs = targetMs - now;
+  if (diffMs <= 0) return "now";
+
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 60) return `${diffMins}m`;
+
+  const hours = Math.floor(diffMins / 60);
+  const mins = diffMins % 60;
+  if (hours < 24) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ${hours % 24}h`;
+
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(targetMs));
+}
+
 async function getOpenClawCodexQuota() {
   const now = Date.now();
-  if (codexQuotaCache.value && now - codexQuotaCache.fetchedAt < CODEX_QUOTA_CACHE_TTL_MS) {
-    return codexQuotaCache.value;
-  }
-
   if (codexQuotaCache.inflight) {
     return codexQuotaCache.inflight;
   }
 
   codexQuotaCache.inflight = (async () => {
     try {
-      const output = execSync("openclaw status --usage", {
+      const output = execSync("openclaw status --json --usage", {
         encoding: "utf8",
         timeout: 15000,
         env: { ...process.env, NO_COLOR: "1", CLICOLOR: "0", FORCE_COLOR: "0" },
       });
 
-      const providerMatch = output.match(/Codex \(([^)]+)\)/i);
-      const fiveHourMatch = output.match(/5h:\s*(\d+)% left\s*·\s*resets\s*([^\n]+)/i);
-      const weekMatch = output.match(/Week:\s*(\d+)% left\s*·\s*resets\s*([^\n]+)/i);
+      const parsed = JSON.parse(output);
+      const usage = parsed?.usage;
+      const codex = usage?.providers?.find?.((entry) => entry?.provider === "openai-codex");
+      if (!codex) return null;
 
-      if (!providerMatch && !fiveHourMatch && !weekMatch) return null;
+      const fiveHour = codex.windows?.find?.((window) => window?.label === "5h");
+      const week = codex.windows?.find?.((window) => window?.label === "Week");
+
+      console.log(`[codex-quota] fetchedAt=${new Date().toISOString()} json=${JSON.stringify(codex)}`);
 
       const value = {
         provider: "codex",
-        plan: providerMatch?.[1] || null,
-        five_hour_left_percent: fiveHourMatch ? parseInt(fiveHourMatch[1], 10) : null,
-        five_hour_reset_in: fiveHourMatch?.[2]?.trim() || null,
-        week_left_percent: weekMatch ? parseInt(weekMatch[1], 10) : null,
-        week_reset_in: weekMatch?.[2]?.trim() || null,
-        source: "openclaw status --usage (cached 60s)",
+        plan: codex.plan || null,
+        five_hour_left_percent: fiveHour ? Math.max(0, Math.min(100, 100 - (fiveHour.usedPercent || 0))) : null,
+        five_hour_reset_in: fiveHour?.resetAt ? formatResetRemaining(fiveHour.resetAt, now) : null,
+        week_left_percent: week ? Math.max(0, Math.min(100, 100 - (week.usedPercent || 0))) : null,
+        week_reset_in: week?.resetAt ? formatResetRemaining(week.resetAt, now) : null,
+        source: "openclaw status --json --usage",
       };
 
       codexQuotaCache.value = value;
