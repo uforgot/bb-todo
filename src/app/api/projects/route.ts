@@ -1,9 +1,20 @@
 import { NextResponse } from "next/server";
-import { listActiveProjectsTree } from "../../../lib/todo-service";
+
+const USAGE_API_URL = process.env.USAGE_API_URL || "https://ai.tail6603fc.ts.net";
+const USAGE_API_KEY = process.env.USAGE_API_KEY || "";
 
 export async function GET() {
   try {
-    const data = await listActiveProjectsTree();
+    const res = await fetch(`${USAGE_API_URL.replace(/\/usage$/, "")}/api/projects`, {
+      headers: { Authorization: `Bearer ${USAGE_API_KEY}` },
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      throw new Error(`Projects API error: ${res.status}`);
+    }
+
+    const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
     const message =

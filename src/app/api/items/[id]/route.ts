@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteItem, updateItem } from "../../../../lib/todo-service";
+
+const USAGE_API_URL = process.env.USAGE_API_URL || "https://ai.tail6603fc.ts.net";
+const USAGE_API_KEY = process.env.USAGE_API_KEY || "";
 
 export async function PATCH(
   request: NextRequest,
@@ -7,37 +9,30 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const itemId = Number(id);
-    if (Number.isNaN(itemId)) {
-      return NextResponse.json({ error: "Invalid item id" }, { status: 400 });
+    const body = await request.json();
+
+    const res = await fetch(
+      `${USAGE_API_URL.replace(/\/usage$/, "")}/api/items/${id}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${USAGE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Items API error: ${res.status}`);
     }
 
-    const body = await request.json();
-    const data = await updateItem(itemId, body);
+    const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to update item";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
-}
-
-export async function DELETE(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    const { id } = await params;
-    const itemId = Number(id);
-    if (Number.isNaN(itemId)) {
-      return NextResponse.json({ error: "Invalid item id" }, { status: 400 });
-    }
-
-    const data = await deleteItem(itemId);
-    return NextResponse.json(data);
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to delete item";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
