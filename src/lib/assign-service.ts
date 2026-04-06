@@ -1,7 +1,7 @@
 import fs from "fs";
 import https from "https";
 import path from "path";
-import { getSupabaseAdmin } from "./supabase-admin";
+import { supabaseAdmin } from "./supabase-admin";
 
 const IMAGES_DIR = path.join(process.cwd(), "server", "images");
 const BBANG_DISCORD_ID = "1471495923400970377";
@@ -95,7 +95,6 @@ function extractFiles(item: AssignableItem) {
 }
 
 export async function getAssignableItems(itemIds: number[]) {
-  const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("items")
     .select(`
@@ -107,20 +106,17 @@ export async function getAssignableItems(itemIds: number[]) {
   if (error) throw error;
 
   return (data ?? [])
-    .map((row) => {
-      const project = Array.isArray(row.projects) ? row.projects[0] : row.projects;
-      return {
-        id: row.id,
-        title: row.title,
-        content: row.content,
-        status: row.status,
-        project_name: project?.name,
-        project_emoji: project?.emoji ?? null,
-        discord_channel_id: project?.discord_channel_id ?? null,
-        discord_thread_id: project?.discord_thread_id ?? null,
-      };
-    })
-    .filter((item): item is AssignableItem => !!item.project_name);
+    .map((row) => ({
+      id: row.id,
+      title: row.title,
+      content: row.content,
+      status: row.status,
+      project_name: row.projects?.name,
+      project_emoji: row.projects?.emoji ?? null,
+      discord_channel_id: row.projects?.discord_channel_id ?? null,
+      discord_thread_id: row.projects?.discord_thread_id ?? null,
+    }))
+    .filter((item) => item.project_name);
 }
 
 export async function assignItems(itemIds: number[]) {
@@ -179,7 +175,6 @@ export async function assignItems(itemIds: number[]) {
   }
 
   if (assignedIds.length > 0) {
-    const supabaseAdmin = getSupabaseAdmin();
     const { error } = await supabaseAdmin
       .from("items")
       .update({ status: "in_progress" })
