@@ -483,8 +483,10 @@ async function getOpenClawCodexQuota() {
         plan: codex.plan || null,
         five_hour_left_percent: fiveHour ? Math.max(0, Math.min(100, 100 - (fiveHour.usedPercent || 0))) : null,
         five_hour_reset_in: fiveHour?.resetAt ? formatResetRemaining(fiveHour.resetAt, now) : null,
+        five_hour_reset_at: fiveHour?.resetAt ? new Date(fiveHour.resetAt).toISOString() : null,
         week_left_percent: week ? Math.max(0, Math.min(100, 100 - (week.usedPercent || 0))) : null,
         week_reset_in: week?.resetAt ? formatResetRemaining(week.resetAt, now) : null,
+        week_reset_at: week?.resetAt ? new Date(week.resetAt).toISOString() : null,
         source: "openclaw status --json --usage",
       };
 
