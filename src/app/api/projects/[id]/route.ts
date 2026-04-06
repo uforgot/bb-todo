@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteItem, updateItem } from "../../../../lib/todo-service";
+import { deleteProject, updateProject } from "../../../../lib/todo-service";
 
 export async function PATCH(
   request: NextRequest,
@@ -7,17 +7,16 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const itemId = Number(id);
-    if (Number.isNaN(itemId)) {
-      return NextResponse.json({ error: "Invalid item id" }, { status: 400 });
+    const projectId = Number(id);
+    if (Number.isNaN(projectId)) {
+      return NextResponse.json({ error: "Invalid project id" }, { status: 400 });
     }
 
     const body = await request.json();
-    const data = await updateItem(itemId, body);
+    const data = await updateProject(projectId, body);
     return NextResponse.json(data);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to update item";
+    const message = error instanceof Error ? error.message : "Failed to update project";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
@@ -28,16 +27,15 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const itemId = Number(id);
-    if (Number.isNaN(itemId)) {
-      return NextResponse.json({ error: "Invalid item id" }, { status: 400 });
+    const projectId = Number(id);
+    if (Number.isNaN(projectId)) {
+      return NextResponse.json({ error: "Invalid project id" }, { status: 400 });
     }
 
-    const data = await deleteItem(itemId);
+    const data = await deleteProject(projectId);
     return NextResponse.json(data);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to delete item";
+    const message = error instanceof Error ? error.message : "Failed to delete project";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
