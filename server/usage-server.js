@@ -454,6 +454,27 @@ function formatResetRemaining(targetMs, now = Date.now()) {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(targetMs));
 }
 
+function getCodexAuthProfile() {
+  try {
+    const authPath = path.join(require("os").homedir(), ".openclaw/agents/main/agent/auth-profiles.json");
+    const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    const profiles = parsed?.profiles || {};
+    const preferred = parsed?.lastGood?.["openai-codex"];
+    const profile = (preferred && profiles[preferred]) || profiles["openai-codex:default"] || Object.values(profiles).find((entry) => entry?.provider === "openai-codex");
+    if (!profile?.access) return null;
+    const tokenPayload = JSON.parse(Buffer.from(profile.access.split(".")[1], "base64url").toString("utf8"));
+    const embeddedAccountId = tokenPayload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+    return {
+      access: profile.access,
+      accountId: profile.accountId || embeddedAccountId || undefined,
+      email: profile.email || tokenPayload?.["https://api.openai.com/profile"]?.email || null,
+    };
+  } catch (e) {
+    console.error("Codex auth profile error:", e.message);
+    return null;
+  }
+}
+
 async function getOpenClawCodexQuota() {
   const now = Date.now();
   if (codexQuotaCache.inflight) {
@@ -462,39 +483,51 @@ async function getOpenClawCodexQuota() {
 
   codexQuotaCache.inflight = (async () => {
     try {
-      const output = execSync("openclaw status --json --usage", {
-        encoding: "utf8",
+      const auth = getCodexAuthProfile();
+      if (!auth?.access) return null;
+
+      const headers = {
+        Authorization: `Bearer ${auth.access}`,
+        "User-Agent": "CodexBar",
+        Accept: "application/json",
+        ...(auth.accountId ? { "ChatGPT-Account-Id": auth.accountId } : {}),
+      };
+
+      const res = await httpsJson({
+        hostname: "chatgpt.com",
+        path: "/backend-api/wham/usage",
+        headers,
         timeout: 15000,
-        env: { ...process.env, NO_COLOR: "1", CLICOLOR: "0", FORCE_COLOR: "0" },
       });
 
-      const parsed = JSON.parse(output);
-      const usage = parsed?.usage;
-      const codex = usage?.providers?.find?.((entry) => entry?.provider === "openai-codex");
-      if (!codex) return null;
+      if (res.status !== 200 || !res.data) {
+        console.error("Codex wham usage error:", res.status, res.error || res.parseError || res.raw || "unknown");
+        return codexQuotaCache.value || null;
+      }
 
-      const fiveHour = codex.windows?.find?.((window) => window?.label === "5h");
-      const week = codex.windows?.find?.((window) => window?.label === "Week");
+      const rateLimit = res.data?.rate_limit || {};
+      const fiveHour = rateLimit.primary_window || null;
+      const week = rateLimit.secondary_window || null;
 
-      console.log(`[codex-quota] fetchedAt=${new Date().toISOString()} json=${JSON.stringify(codex)}`);
+      console.log(`[codex-quota] fetchedAt=${new Date().toISOString()} email=${auth.email || "unknown"} accountId=${auth.accountId || "none"} raw=${JSON.stringify({primary_window: fiveHour, secondary_window: week})}`);
 
       const value = {
         provider: "codex",
-        plan: codex.plan || null,
-        five_hour_left_percent: fiveHour ? Math.max(0, Math.min(100, 100 - (fiveHour.usedPercent || 0))) : null,
-        five_hour_reset_in: fiveHour?.resetAt ? formatResetRemaining(fiveHour.resetAt, now) : null,
-        five_hour_reset_at: fiveHour?.resetAt ? new Date(fiveHour.resetAt).toISOString() : null,
-        week_left_percent: week ? Math.max(0, Math.min(100, 100 - (week.usedPercent || 0))) : null,
-        week_reset_in: week?.resetAt ? formatResetRemaining(week.resetAt, now) : null,
-        week_reset_at: week?.resetAt ? new Date(week.resetAt).toISOString() : null,
-        source: "openclaw status --json --usage",
+        plan: res.data?.plan_type ? `${res.data.plan_type} ($${Number(res.data?.credits?.balance || 0).toFixed(2)})` : null,
+        five_hour_left_percent: fiveHour ? Math.max(0, Math.min(100, 100 - (fiveHour.used_percent || 0))) : null,
+        five_hour_reset_in: fiveHour?.reset_at ? formatResetRemaining(fiveHour.reset_at * 1000, now) : null,
+        five_hour_reset_at: fiveHour?.reset_at ? new Date(fiveHour.reset_at * 1000).toISOString() : null,
+        week_left_percent: week ? Math.max(0, Math.min(100, 100 - (week.used_percent || 0))) : null,
+        week_reset_in: week?.reset_at ? formatResetRemaining(week.reset_at * 1000, now) : null,
+        week_reset_at: week?.reset_at ? new Date(week.reset_at * 1000).toISOString() : null,
+        source: "chatgpt.com/backend-api/wham/usage",
       };
 
       codexQuotaCache.value = value;
       codexQuotaCache.fetchedAt = Date.now();
       return value;
     } catch (e) {
-      console.error("OpenClaw Codex quota error:", e.message);
+      console.error("Codex raw usage error:", e.message);
       return codexQuotaCache.value || null;
     } finally {
       codexQuotaCache.inflight = null;
