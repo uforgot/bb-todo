@@ -19,6 +19,7 @@ const API_KEY = process.env.USAGE_API_KEY;
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY;
 const ANTHROPIC_ADMIN_API_KEY = process.env.ANTHROPIC_ADMIN_API_KEY;
 const OPENAI_ADMIN_API_KEY = process.env.OPENAI_ADMIN_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const CRON_JOBS_PATH = process.env.CRON_JOBS_PATH || path.join(require("os").homedir(), ".openclaw/cron/jobs.json");
 const CRON_POLL_INTERVAL = parseInt(process.env.CRON_POLL_INTERVAL || "300000"); // 5 min
 const DB_PATH = process.env.CRON_DB_PATH || path.join(__dirname, "cron.db");
@@ -560,6 +561,35 @@ function httpsJson({ hostname, path, method = "GET", headers = {}, timeout = 150
   });
 }
 
+async function getOpenRouterCredits() {
+  if (!OPENROUTER_API_KEY) return null;
+
+  const res = await httpsJson({
+    hostname: "openrouter.ai",
+    path: "/api/v1/credits",
+    headers: {
+      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (res.status !== 200 || !res.data?.data) {
+    console.error("OpenRouter credits error:", res.status, res.error || res.parseError || res.raw || "unknown");
+    return null;
+  }
+
+  const totalCredits = Number(res.data.data.total_credits || 0);
+  const totalUsage = Number(res.data.data.total_usage || 0);
+
+  return {
+    total_credits: totalCredits,
+    total_usage: totalUsage,
+    remaining_credits: Math.max(totalCredits - totalUsage, 0),
+    currency: "USD",
+    source: "openrouter.ai/api/v1/credits",
+  };
+}
+
 async function getOpenAIUsage() {
   if (!OPENAI_ADMIN_API_KEY) return null;
 
@@ -693,14 +723,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/usage" || url.pathname === "/usage/") {
-      const [claude, kimi, openai, codexQuota] = await Promise.all([
+      const [claude, kimi, openai, codexQuota, openrouter] = await Promise.all([
         getClaudeUsage(),
         getKimiBalance(),
         getOpenAIUsage(),
         getOpenClawCodexQuota(),
+        getOpenRouterCredits(),
       ]);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ claude, kimi, openai, codexQuota, timestamp: new Date().toISOString() }));
+      res.end(JSON.stringify({ claude, kimi, openai, codexQuota, openrouter, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/claude") {
       const claude = getClaudeUsage();
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -713,6 +744,10 @@ const server = http.createServer(async (req, res) => {
       const openai = await getOpenAIUsage();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ openai, timestamp: new Date().toISOString() }));
+    } else if (url.pathname === "/usage/openrouter") {
+      const openrouter = await getOpenRouterCredits();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ openrouter, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/codex") {
       const codexQuota = await getOpenClawCodexQuota();
       res.writeHead(200, { "Content-Type": "application/json" });
