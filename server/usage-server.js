@@ -733,7 +733,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ claude, kimi, openai, codexQuota, openrouter, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/claude") {
-      const claude = getClaudeUsage();
+      const claude = await getClaudeUsage();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ claude, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/kimi") {

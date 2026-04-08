@@ -3,20 +3,20 @@ import { fetchUsagePath } from "../shared";
 
 const TTL_MS = 3 * 60 * 1000;
 
-type ClaudeCache = {
-  claude: unknown | null;
+type OpenRouterCache = {
+  openrouter: unknown | null;
   timestamp: string;
   fetchedAt: string;
 };
 
-let cache: ClaudeCache | null = null;
-let inflight: Promise<ClaudeCache> | null = null;
+let cache: OpenRouterCache | null = null;
+let inflight: Promise<OpenRouterCache> | null = null;
 
-async function fetchLive(): Promise<ClaudeCache> {
-  const live = await fetchUsagePath("/usage");
+async function fetchLive(): Promise<OpenRouterCache> {
+  const live = await fetchUsagePath("/usage/openrouter");
   const now = new Date().toISOString();
   const next = {
-    claude: live.claude ?? null,
+    openrouter: live.openrouter ?? null,
     timestamp: live.timestamp ?? now,
     fetchedAt: now,
   };
@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
     if (cache) {
       return NextResponse.json({ ...cache, isStale: true, source: "cache" });
     }
-    const message = error instanceof Error ? error.message : "Failed to fetch Claude usage";
+    const message = error instanceof Error ? error.message : "Failed to fetch OpenRouter usage";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
