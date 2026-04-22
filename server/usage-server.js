@@ -455,21 +455,46 @@ function formatResetRemaining(targetMs, now = Date.now()) {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(targetMs));
 }
 
+function safeReadJson(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (e) {
+    if (e?.code !== "ENOENT") {
+      console.error(`JSON read error (${filePath}):`, e.message);
+    }
+    return null;
+  }
+}
+
 function getCodexAuthProfile() {
   try {
-    const authPath = path.join(require("os").homedir(), ".openclaw/agents/main/agent/auth-profiles.json");
-    const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
-    const profiles = parsed?.profiles || {};
-    const preferred = parsed?.lastGood?.["openai-codex"];
-    const profile = (preferred && profiles[preferred]) || profiles["openai-codex:default"] || Object.values(profiles).find((entry) => entry?.provider === "openai-codex");
-    if (!profile?.access) return null;
-    const tokenPayload = JSON.parse(Buffer.from(profile.access.split(".")[1], "base64url").toString("utf8"));
-    const embeddedAccountId = tokenPayload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
-    return {
-      access: profile.access,
-      accountId: profile.accountId || embeddedAccountId || undefined,
-      email: profile.email || tokenPayload?.["https://api.openai.com/profile"]?.email || null,
-    };
+    const os = require("os");
+    const home = os.homedir();
+    const candidates = [
+      path.join(home, ".openclaw/agents/main/agent/auth-profiles.json"),
+      path.join(home, ".codex/auth.json"),
+    ];
+
+    for (const authPath of candidates) {
+      const parsed = safeReadJson(authPath);
+      if (!parsed) continue;
+
+      const profiles = parsed?.profiles || {};
+      const preferred = parsed?.lastGood?.["openai-codex"];
+      const profile = (preferred && profiles[preferred]) || profiles["openai-codex:default"] || Object.values(profiles).find((entry) => entry?.provider === "openai-codex");
+      if (!profile?.access) continue;
+
+      const tokenPayload = JSON.parse(Buffer.from(profile.access.split(".")[1], "base64url").toString("utf8"));
+      const embeddedAccountId = tokenPayload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+      return {
+        access: profile.access,
+        accountId: profile.accountId || embeddedAccountId || undefined,
+        email: profile.email || tokenPayload?.["https://api.openai.com/profile"]?.email || null,
+        source: authPath,
+      };
+    }
+
+    return null;
   } catch (e) {
     console.error("Codex auth profile error:", e.message);
     return null;
@@ -485,7 +510,10 @@ async function getOpenClawCodexQuota() {
   codexQuotaCache.inflight = (async () => {
     try {
       const auth = getCodexAuthProfile();
-      if (!auth?.access) return null;
+      if (!auth?.access) {
+        console.error("Codex auth profile missing: checked ~/.openclaw/agents/main/agent/auth-profiles.json and ~/.codex/auth.json");
+        return codexQuotaCache.value || null;
+      }
 
       const headers = {
         Authorization: `Bearer ${auth.access}`,
@@ -510,7 +538,7 @@ async function getOpenClawCodexQuota() {
       const fiveHour = rateLimit.primary_window || null;
       const week = rateLimit.secondary_window || null;
 
-      console.log(`[codex-quota] fetchedAt=${new Date().toISOString()} email=${auth.email || "unknown"} accountId=${auth.accountId || "none"} raw=${JSON.stringify({primary_window: fiveHour, secondary_window: week})}`);
+      console.log(`[codex-quota] fetchedAt=${new Date().toISOString()} source=${auth.source || "unknown"} email=${auth.email || "unknown"} accountId=${auth.accountId || "none"} raw=${JSON.stringify({primary_window: fiveHour, secondary_window: week})}`);
 
       const value = {
         provider: "codex",
