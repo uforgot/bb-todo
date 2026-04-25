@@ -250,6 +250,16 @@ function pollCronJobs() {
         }
       }
     }
+    // Remove jobs from DB that are no longer in jobs.json
+    const currentIds = jobs.map(j => j.id).filter(Boolean);
+    if (currentIds.length > 0) {
+      const placeholders = currentIds.map(() => "?").join(",");
+      const removed = db.prepare(`DELETE FROM cron_jobs WHERE job_id NOT IN (${placeholders})`).run(...currentIds);
+      if (removed.changes > 0) {
+        console.log(`[cron-poll] ${removed.changes} stale job(s) removed from DB`);
+      }
+    }
+
     if (updated > 0) {
       console.log(`[cron-poll] ${updated} new run(s) recorded, ${jobs.length} jobs synced`);
     }
