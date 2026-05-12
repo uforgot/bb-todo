@@ -5,12 +5,14 @@
  * Designed to run behind Tailscale Funnel
  */
 
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
+
 const http = require("http");
 const { execSync } = require("child_process");
 const https = require("https");
 const plist = require("simple-plist");
 const fs = require("fs");
-const path = require("path");
 const Database = require("better-sqlite3");
 const sharp = require("sharp");
 
@@ -1222,9 +1224,14 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: "Invalid file" }));
         return;
       }
-      const basePath = agent === "pang"
-        ? path.join(require("os").homedir(), ".openclaw/workspace-pang")
-        : path.join(require("os").homedir(), ".openclaw/workspace");
+      const AGENT_WORKSPACES = {
+        bbang: ".openclaw/workspace",
+        pang: ".openclaw/workspace-pang",
+        boong: ".openclaw/workspace-boong",
+        ob: ".openclaw/workspace-ob",
+      };
+      const wsRel = AGENT_WORKSPACES[agent] || AGENT_WORKSPACES.bbang;
+      const basePath = path.join(require("os").homedir(), wsRel);
       const filePath = path.join(basePath, file);
       try {
         const content = fs.readFileSync(filePath, "utf-8");
@@ -1509,3 +1516,10 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`✅ Usage API server running on port ${PORT}`);
 });
+
+// Voice bridge — bb-private [voice] 메시지 감지 → 빵빵 답변 Ably publish
+try {
+  require("./voice-bridge").start();
+} catch (e) {
+  console.error("[voice-bridge] failed to start:", e.message);
+}
