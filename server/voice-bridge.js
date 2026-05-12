@@ -4,8 +4,11 @@ const Ably = require("ably");
 
 const TOKEN = process.env.DISCORD_VOICE_BOT_TOKEN;
 const ABLY_KEY = process.env.ABLY_ROOT_KEY;
-const BB_CHANNEL_ID = process.env.BB_PRIVATE_CHANNEL_ID || "1502979840670961776";
-const BB_USER_ID = process.env.BBANGBBANG_USER_ID || ""; // 빵빵 Discord user ID
+const BB_CHANNEL_IDS = (process.env.BB_VOICE_CHANNEL_IDS || "1472162937648189615,1502979840670961776")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const BB_USER_ID = process.env.BBANGBBANG_USER_ID || "1471495923400970377"; // 빵빵
 const ABLY_CHANNEL = process.env.ABLY_VOICE_CHANNEL || "bb-voice";
 const RESPONSE_TIMEOUT_MS = 30_000;
 
@@ -50,14 +53,12 @@ function start() {
   client.once(Events.ClientReady, (c) => {
     selfId = c.user.id;
     console.log(`[voice-bridge] listener ready as ${c.user.tag} (${selfId})`);
-    console.log(`[voice-bridge] watching channel ${BB_CHANNEL_ID}, ably channel "${ABLY_CHANNEL}"`);
-    if (!BB_USER_ID) {
-      console.warn("[voice-bridge] BBANGBBANG_USER_ID not set — will accept any bot msg in armed window (fallback)");
-    }
+    console.log(`[voice-bridge] watching channels [${BB_CHANNEL_IDS.join(",")}], ably channel "${ABLY_CHANNEL}"`);
+    console.log(`[voice-bridge] BB user id = ${BB_USER_ID || "(any bot)"}`);
   });
 
   client.on(Events.MessageCreate, async (msg) => {
-    if (msg.channelId !== BB_CHANNEL_ID) return;
+    if (!BB_CHANNEL_IDS.includes(msg.channelId)) return;
     if (msg.author.id === selfId) return;
 
     // User [voice] → arm
