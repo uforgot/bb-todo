@@ -15,19 +15,22 @@ const VOICE_HINT = process.env.VOICE_PROMPT_HINT
   || "[규칙: 2문장, 평문, 영어 약어/마크다운/괄호 X, 한국어로만 답변]";
 const RESPONSE_TIMEOUT_MS = 30_000;
 
-async function injectHint(msg) {
-  const editURL = `${VOICE_WEBHOOK_URL.replace(/\/$/, "")}/messages/${msg.id}`;
-  const newContent = msg.content.replace(/^\[voice\]\s*/i, `[voice] ${VOICE_HINT} `);
-  const res = await fetch(editURL, {
-    method: "PATCH",
+async function postViaWebhook(text) {
+  if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
+  const content = `[voice] ${VOICE_HINT} <@${BB_USER_ID}> ${text}`;
+  const res = await fetch(VOICE_WEBHOOK_URL, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: newContent }),
+    body: JSON.stringify({
+      content,
+      username: "uforgot voice",
+      allowed_mentions: { users: [BB_USER_ID] },
+    }),
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`PATCH ${res.status}: ${body.slice(0, 200)}`);
+    throw new Error(`POST webhook ${res.status}: ${body.slice(0, 200)}`);
   }
-  console.log("[voice-bridge] hint injected into webhook msg", msg.id);
 }
 
 function cleanForVoice(text) {
@@ -55,6 +58,19 @@ function start() {
 
   const ably = new Ably.Realtime(ABLY_KEY);
   const ablyChannel = ably.channels.get(ABLY_CHANNEL);
+
+  // iOS → Ably "request" 이벤트 받으면 hint 박아 Discord webhook으로 post
+  ablyChannel.subscribe("request", async (msg) => {
+    const data = msg.data || {};
+    const text = typeof data === "string" ? data : data.text;
+    if (!text || typeof text !== "string") return;
+    try {
+      await postViaWebhook(text.trim());
+      console.log("[voice-bridge] forwarded to Discord:", text.slice(0, 80));
+    } catch (e) {
+      console.error("[voice-bridge] webhook post error:", e.message);
+    }
+  });
 
   const client = new Client({
     intents: [
@@ -90,10 +106,6 @@ function start() {
       }, RESPONSE_TIMEOUT_MS);
       console.log("[voice-bridge] armed for next 빵빵 response");
 
-      // webhook 메시지면 hint 박아 본문 수정 (빵빵이 룰 잊지 못하게)
-      if (msg.webhookId && VOICE_WEBHOOK_URL && !msg.content.includes(VOICE_HINT)) {
-        injectHint(msg).catch((e) => console.error("[voice-bridge] hint inject error", e.message));
-      }
       return;
     }
 
