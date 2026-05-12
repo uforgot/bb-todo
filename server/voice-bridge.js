@@ -61,8 +61,9 @@ function start() {
     if (!BB_CHANNEL_IDS.includes(msg.channelId)) return;
     if (msg.author.id === selfId) return;
 
-    // User [voice] → arm
-    if (!msg.author.bot && msg.content.trim().toLowerCase().startsWith("[voice]")) {
+    // User or webhook [voice] → arm (webhook은 author.bot=true지만 msg.webhookId 있음)
+    const isUserOrWebhook = !msg.author.bot || msg.webhookId != null;
+    if (isUserOrWebhook && msg.content.trim().toLowerCase().startsWith("[voice]")) {
       awaitingResponse = true;
       if (armTimer) clearTimeout(armTimer);
       armTimer = setTimeout(() => {
