@@ -4,7 +4,7 @@ const Ably = require("ably");
 
 const TOKEN = process.env.DISCORD_VOICE_BOT_TOKEN;
 const ABLY_KEY = process.env.ABLY_ROOT_KEY;
-const BB_CHANNEL_IDS = (process.env.BB_VOICE_CHANNEL_IDS || "1472162937648189615,1502979840670961776")
+const BB_CHANNEL_IDS = (process.env.BB_VOICE_CHANNEL_IDS || "1472162937648189615")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -12,7 +12,7 @@ const BB_USER_ID = process.env.BBANGBBANG_USER_ID || "1471495923400970377"; // �
 const ABLY_CHANNEL = process.env.ABLY_VOICE_CHANNEL || "bb-voice";
 const VOICE_WEBHOOK_URL = process.env.DISCORD_VOICE_WEBHOOK_URL || ""; // hint 박을 webhook
 const VOICE_HINT = process.env.VOICE_PROMPT_HINT
-  || "[규칙: 2문장, 평문, 영어 약어/마크다운/괄호 X, 한국어로만 답변]";
+  || "[규칙: 5문장 이내, 평문, 영어 약어/마크다운/괄호 X, 한국어로만 답변]";
 const RESPONSE_TIMEOUT_MS = 30_000;
 
 async function postViaWebhook(text) {
@@ -45,7 +45,7 @@ function cleanForVoice(text) {
     .replace(/\n{2,}/g, ". ")
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
     .split(/(?<=[.!?。!?])\s+/)
-    .slice(0, 3)
+    .slice(0, 5)
     .join(" ")
     .trim();
 }
