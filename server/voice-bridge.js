@@ -10,7 +10,25 @@ const BB_CHANNEL_IDS = (process.env.BB_VOICE_CHANNEL_IDS || "1472162937648189615
   .filter(Boolean);
 const BB_USER_ID = process.env.BBANGBBANG_USER_ID || "1471495923400970377"; // 빵빵
 const ABLY_CHANNEL = process.env.ABLY_VOICE_CHANNEL || "bb-voice";
+const VOICE_WEBHOOK_URL = process.env.DISCORD_VOICE_WEBHOOK_URL || ""; // hint 박을 webhook
+const VOICE_HINT = process.env.VOICE_PROMPT_HINT
+  || "[규칙: 2문장, 평문, 영어 약어/마크다운/괄호 X, 한국어로만 답변]";
 const RESPONSE_TIMEOUT_MS = 30_000;
+
+async function injectHint(msg) {
+  const editURL = `${VOICE_WEBHOOK_URL.replace(/\/$/, "")}/messages/${msg.id}`;
+  const newContent = msg.content.replace(/^\[voice\]\s*/i, `[voice] ${VOICE_HINT} `);
+  const res = await fetch(editURL, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: newContent }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`PATCH ${res.status}: ${body.slice(0, 200)}`);
+  }
+  console.log("[voice-bridge] hint injected into webhook msg", msg.id);
+}
 
 function cleanForVoice(text) {
   return (text || "")
@@ -71,6 +89,11 @@ function start() {
         console.log("[voice-bridge] timeout — disarmed");
       }, RESPONSE_TIMEOUT_MS);
       console.log("[voice-bridge] armed for next 빵빵 response");
+
+      // webhook 메시지면 hint 박아 본문 수정 (빵빵이 룰 잊지 못하게)
+      if (msg.webhookId && VOICE_WEBHOOK_URL && !msg.content.includes(VOICE_HINT)) {
+        injectHint(msg).catch((e) => console.error("[voice-bridge] hint inject error", e.message));
+      }
       return;
     }
 
