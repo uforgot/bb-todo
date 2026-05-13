@@ -1499,6 +1499,69 @@ const server = http.createServer(async (req, res) => {
       fs.createReadStream(filePath).pipe(res);
       return;
 
+    } else if (url.pathname === "/api/voice-usage" && req.method === "GET") {
+      // ElevenLabs 구독/사용량 — character_count, character_limit 기준 퍼센트 반환.
+      try {
+        const elevenKey = process.env.ELEVENLABS_API_KEY;
+        if (!elevenKey) {
+          sendError(res, 500, "ELEVENLABS_API_KEY not set");
+          return;
+        }
+        const r = await fetch("https://api.elevenlabs.io/v1/user/subscription", {
+          headers: { "xi-api-key": elevenKey },
+        });
+        if (!r.ok) {
+          sendError(res, r.status, `elevenlabs subscription error ${r.status}`);
+          return;
+        }
+        const j = await r.json();
+        const used = Number(j.character_count) || 0;
+        const limit = Number(j.character_limit) || 0;
+        const remaining = Math.max(0, limit - used);
+        const usedPct = limit > 0 ? (used / limit) * 100 : 0;
+        const remainingPct = limit > 0 ? (remaining / limit) * 100 : 0;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          used,
+          limit,
+          remaining,
+          usedPct: Math.round(usedPct * 10) / 10,
+          remainingPct: Math.round(remainingPct * 10) / 10,
+          nextResetUnix: j.next_character_count_reset_unix || null,
+          tier: j.tier || null,
+        }));
+      } catch (e) {
+        sendError(res, 500, `voice-usage error: ${e.message}`);
+      }
+
+    } else if (url.pathname === "/api/voice-config" && req.method === "GET") {
+      // voice-config.json을 매 요청마다 읽음 — 파일만 저장하면 즉시 반영, 서버 재기동 불필요.
+      const cfgPath = path.join(__dirname, "voice-config.json");
+      let cfg = {};
+      try {
+        const raw = fs.readFileSync(cfgPath, "utf8");
+        // JSONC — //, /* */ 주석 허용. 문자열 안의 슬래시는 보존.
+        const stripped = raw
+          .replace(/("(?:\\.|[^"\\])*")|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (m, str) => str || "");
+        cfg = JSON.parse(stripped);
+      } catch (e) {
+        console.warn("[voice-config] read failed, using defaults:", e.message);
+      }
+      const settings = cfg.voiceSettings || {};
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        voiceId: cfg.voiceId || "NaQdbkW5gNZD8wfwXeTV",
+        ttsModel: cfg.ttsModel || "eleven_v3",
+        sttModel: cfg.sttModel || "scribe_v1",
+        voiceSettings: {
+          stability: typeof settings.stability === "number" ? settings.stability : 0.5,
+          similarityBoost: typeof settings.similarityBoost === "number" ? settings.similarityBoost : 0.75,
+          style: typeof settings.style === "number" ? settings.style : 0,
+          speed: typeof settings.speed === "number" ? settings.speed : 1.0,
+        },
+        iosWaitingTimeoutSec: typeof cfg.iosWaitingTimeoutSec === "number" ? cfg.iosWaitingTimeoutSec : 95,
+      }));
+
     } else if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
