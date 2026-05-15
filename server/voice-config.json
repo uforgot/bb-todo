@@ -44,9 +44,9 @@
       "color": "#8B5CF6",
       "ttsModel": "eleven_v3",
       "voiceSettings": {
-        "stability": 0.4,
+        "stability": 0.35,
         "similarityBoost": 0.65,
-        "style": 0.45,
+        "style": 0.58,
         "speed": 1.05
       }
     },
