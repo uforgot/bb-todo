@@ -45,9 +45,9 @@
       "ttsModel": "eleven_v3",
       "voiceSettings": {
         "stability": 0.5,
-        "similarityBoost": 0.70,
-        "style": 0.42,
-        "speed": 1.4
+        "similarityBoost": 0.75,
+        "style": 0,
+        "speed": 1.0
       }
     },
     "obbang": {
