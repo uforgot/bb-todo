@@ -19,10 +19,11 @@ const DEFAULT_BOT_KEY = "bbangbbang";
 const ABLY_CHANNEL = process.env.ABLY_VOICE_CHANNEL || "bb-voice";
 const VOICE_WEBHOOK_URL = process.env.DISCORD_VOICE_WEBHOOK_URL || ""; // hint 박을 webhook
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
+const PLACES_API_URL = process.env.BB_ADMIN_PLACES_API_URL || "http://127.0.0.1:3000/api/places";
+const PLACES_CACHE_TTL_MS = Number(process.env.PLACES_CACHE_TTL_MS || 30_000);
 const FACE_CLI_PATH = process.env.FACE_CLI_PATH || path.join(process.env.HOME || "", ".openclaw/workspace/scripts/face");
 const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD || 0.4);
 const DISCORD_IMAGE_DIR = path.join(__dirname, "images", "discord-face");
-const DEFAULT_HINT = "[voice: add 1-2 ElevenLabs v3 emotion tags in [] before the clause they modify when natural, e.g. [happy] [calm] [warm] [laughs softly] [whispers].]";
 const DEFAULT_TIMEOUT_MS = 90_000;
 
 const IMAGE_MIME_TYPES = {
@@ -43,12 +44,6 @@ function readConfig() {
   } catch {
     return {};
   }
-}
-
-function readPromptHint() {
-  const cfg = readConfig();
-  if (typeof cfg.promptHint === "string" && cfg.promptHint.trim()) return cfg.promptHint;
-  return DEFAULT_HINT;
 }
 
 function readBotsConfig() {
@@ -86,9 +81,99 @@ function readTimeoutMs() {
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_TIMEOUT_MS;
 }
 
+let placesCache = { expiresAt: 0, places: [] };
+
+function normalizeLocation(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const lat = Number(raw.lat);
+  const lng = Number(raw.lng);
+  const accuracy = Number(raw.accuracy);
+  const ts = typeof raw.ts === "string" ? raw.ts : null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return {
+    lat,
+    lng,
+    accuracy: Number.isFinite(accuracy) ? accuracy : null,
+    ts,
+  };
+}
+
+function distanceMeters(a, b) {
+  const toRad = (deg) => deg * Math.PI / 180;
+  const earthRadiusM = 6_371_000;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * earthRadiusM * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+async function fetchPlaces() {
+  const now = Date.now();
+  if (placesCache.expiresAt > now) return placesCache.places;
+
+  const res = await fetch(PLACES_API_URL, { signal: AbortSignal.timeout(3000) });
+  if (!res.ok) throw new Error(`places API ${res.status}`);
+  const data = await res.json();
+  const places = Array.isArray(data?.places) ? data.places : [];
+  placesCache = { expiresAt: now + PLACES_CACHE_TTL_MS, places };
+  return places;
+}
+
+async function resolveLocationLabel(rawLocation) {
+  const location = normalizeLocation(rawLocation);
+  if (!location) return "";
+
+  try {
+    const places = await fetchPlaces();
+    let best = null;
+    for (const place of places) {
+      const lat = Number(place.lat);
+      const lng = Number(place.lng);
+      const radiusM = Number.isFinite(Number(place.radiusM)) ? Number(place.radiusM) : 100;
+      if (!place?.name || !Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      const distanceM = distanceMeters(location, { lat, lng });
+      if (distanceM <= radiusM && (!best || distanceM < best.distanceM)) {
+        best = { name: String(place.name), distanceM, radiusM };
+      }
+    }
+    if (best) {
+      console.log(`[voice-bridge] location matched: ${best.name} (${Math.round(best.distanceM)}m/${best.radiusM}m)`);
+      return best.name;
+    }
+  } catch (e) {
+    console.warn("[voice-bridge] places lookup failed:", e.message);
+  }
+
+  const accuracyPart = Number.isFinite(location.accuracy) ? `, 정확도 약 ${Math.round(location.accuracy)}m` : "";
+  return `위도 ${location.lat.toFixed(5)}, 경도 ${location.lng.toFixed(5)}${accuracyPart}`;
+}
+
+async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
+  const locationLabel = await resolveLocationLabel(location);
+  const hasLocation = Boolean(locationLabel);
+  const hasPhoto = Boolean(faceContext);
+
+  const voiceBullets = ["* 음성 대화체로 얘기해"];
+  if (hasLocation) voiceBullets.push("* 위치는 필요할 때만 자연스럽게 참고하고, 매번 직접 말하지 말 것");
+  if (hasPhoto) voiceBullets.push("* 사진은 굳이 묘사하지 말 것");
+
+  const dataLines = [];
+  if (hasLocation) dataLines.push(`위치: ${locationLabel}`);
+  if (hasPhoto) dataLines.push(`사진: ${faceContext}`);
+  dataLines.push(`발화: ${userText}`);
+
+  return `${voiceBullets.join("\n")}\n\n${dataLines.join("\n")}`;
+}
+
+async function prependLocationContext(text, rawLocation) {
+  return buildVoiceRequestText(text, { location: rawLocation });
+}
+
 async function postViaWebhook(text, imageUrl, mentionKey) {
   if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
-  const hint = readPromptHint();
   const attachment = resolveLocalImageAttachment(imageUrl);
   const imageLine = imageUrl && !attachment ? `\n${imageUrl}` : "";
 
@@ -98,7 +183,7 @@ async function postViaWebhook(text, imageUrl, mentionKey) {
   const targetName = (target && target.displayName) || "빵빵";
 
   const payload = {
-    content: `[voice] ${hint} <@${targetUserId}> ${text}${imageLine}`,
+    content: `[voice] <@${targetUserId}>\n${text}${imageLine}`,
     username: "uforgot voice",
     allowed_mentions: { users: [targetUserId] },
   };
@@ -501,9 +586,10 @@ function start() {
       // Registration is intentionally NOT handled inside voice requests.
       // Safer flow: send the photo to Discord, then reply to that photo message with
       // `이름 등록` or `이름 샘플 추가`. This avoids bots/voice text confusing register intent.
+      const location = typeof data === "object" ? data.location : null;
       const faceContext = imageUrl ? await buildFaceMemoryContext(imageUrl) : "";
-      const textWithFaceContext = faceContext ? `${faceContext} ${trimmed}` : trimmed;
-      await postViaWebhook(textWithFaceContext, imageUrl, mention);
+      const textWithContext = await buildVoiceRequestText(trimmed, { location, faceContext });
+      await postViaWebhook(textWithContext, imageUrl, mention);
       console.log("[voice-bridge] forwarded to Discord:", trimmed.slice(0, 80), imageUrl ? "with image" : "");
     } catch (e) {
       console.error("[voice-bridge] webhook post error:", e.message);
@@ -621,4 +707,4 @@ function start() {
   client.login(TOKEN).catch((e) => console.error("[voice-bridge] login error", e));
 }
 
-module.exports = { start, cleanForVoice };
+module.exports = { start, cleanForVoice, normalizeLocation, distanceMeters, resolveLocationLabel, buildVoiceRequestText, prependLocationContext };

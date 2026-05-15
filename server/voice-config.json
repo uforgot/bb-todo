@@ -87,10 +87,6 @@
     "speed": 1.05
   },
 
-  // [voice] 메시지 앞에 붙는 프롬프트. v3 감정 태그 가이드만 남김.
-  // (한국어/문장수/마크다운 제거는 서버 cleanForVoice 후처리로 처리)
-  "promptHint": "[voice: 음성 대화체로 얘기해.]",
-
   // 응답 대기 타임아웃. 무거운 작업 시 빵빵 답변이 늦을 수 있어 90초 권장. iOS는 +5초 버퍼.
   "bridgeTimeoutMs": 240000,
   "iosWaitingTimeoutSec": 245,
