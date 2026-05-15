@@ -44,10 +44,10 @@
       "color": "#8B5CF6",
       "ttsModel": "eleven_v3",
       "voiceSettings": {
-        "stability": 0.5,
-        "similarityBoost": 0.75,
-        "style": 0,
-        "speed": 1.0
+        "stability": 0.4,
+        "similarityBoost": 0.65,
+        "style": 0.45,
+        "speed": 1.05
       }
     },
     "obbang": {
