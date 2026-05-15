@@ -147,8 +147,7 @@ async function resolveLocationLabel(rawLocation) {
     console.warn("[voice-bridge] places lookup failed:", e.message);
   }
 
-  const accuracyPart = Number.isFinite(location.accuracy) ? `, 정확도 약 ${Math.round(location.accuracy)}m` : "";
-  return `위도 ${location.lat.toFixed(5)}, 경도 ${location.lng.toFixed(5)}${accuracyPart}`;
+  return "미상";
 }
 
 async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
@@ -448,14 +447,14 @@ function facePositionLabels(results) {
   if (list.length === 1) {
     labels.set(list[0].idx, "얼굴");
   } else if (list.length === 2) {
-    labels.set(list[0].idx, "왼쪽 얼굴");
-    labels.set(list[1].idx, "오른쪽 얼굴");
+    labels.set(list[0].idx, "왼");
+    labels.set(list[1].idx, "오른");
   } else if (list.length === 3) {
-    labels.set(list[0].idx, "왼쪽 얼굴");
-    labels.set(list[1].idx, "가운데 얼굴");
-    labels.set(list[2].idx, "오른쪽 얼굴");
+    labels.set(list[0].idx, "왼");
+    labels.set(list[1].idx, "가운데");
+    labels.set(list[2].idx, "오른");
   } else {
-    list.forEach((item, order) => labels.set(item.idx, `왼쪽부터 ${order + 1}번째 얼굴`));
+    list.forEach((item, order) => labels.set(item.idx, `${order + 1}번`));
   }
   return labels;
 }
@@ -463,19 +462,20 @@ function facePositionLabels(results) {
 function formatFaceMemoryContext(matchResult) {
   if (!matchResult || !matchResult.ok) return "";
   const count = Number(matchResult.face_count || 0);
-  if (!count) return "[face memory: 사진에서 얼굴을 찾지 못함. 인물 이름을 추측하지 말 것.]";
+  if (!count) return "얼굴 없음";
   const results = matchResult.results || [];
   const labels = facePositionLabels(results);
+  const single = results.length === 1;
   const parts = results.map((r, idx) => {
-    const label = labels.get(idx) || `${idx + 1}번 얼굴`;
+    const label = labels.get(idx) || `${idx + 1}번`;
     const best = r.match || r.best_candidate;
     if (!best || typeof best.score !== "number" || best.score < FACE_MATCH_THRESHOLD) {
-      return `${label}은 등록된 인물과 일치하지 않음. 미상으로 답할 것`;
+      return single ? "미상" : `${label}=미상`;
     }
     const confidence = faceConfidenceLabel(best.score);
-    return `${label}은 ${best.name}. 판단: ${confidence}`;
+    return single ? `${best.name}(${confidence})` : `${label}=${best.name}(${confidence})`;
   });
-  return `[face memory: 사진에서 얼굴 ${count}명 감지. ${parts.join("; ")}. 얼굴 인식은 보조 정보이므로 낮은 신뢰도는 단정하지 말 것.]`;
+  return parts.join(", ");
 }
 async function buildFaceMemoryContext(imageUrl) {
   const attachment = resolveLocalImageAttachment(imageUrl);
