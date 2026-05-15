@@ -444,7 +444,7 @@ async function handleFaceRegisterIntent(text, imageUrl, ablyChannel, mentionKey)
 }
 
 function cleanForVoice(text) {
-  return normalizeSquareBracketsForTTS(text || "")
+  const sentences = normalizeSquareBracketsForTTS(text || "")
     // URL은 TTS에서 글자단위로 읽혀서 캐릭터 낭비됨. 호스트만 남기고 "링크"로 축약.
     .replace(/https?:\/\/(?:www\.)?([^\/\s]+)[^\s]*/g, (_, host) => `${host} 링크`)
     .replace(/```[\s\S]*?```/g, "")
@@ -471,10 +471,13 @@ function cleanForVoice(text) {
     .replace(/[\/\\|<>{}"`~^&*+=@#$%]/g, " ")
     .replace(/\s*[:;]\s*/g, ", ")
     .replace(/\s{2,}/g, " ")
-    .split(/(?<=[.!?。!?])\s+/)
-    .slice(0, 10)
-    .join(" ")
-    .trim();
+    .split(/(?<=[.!?。!?])\s+/);
+  const MAX_SENTENCES = 5;
+  const truncated = sentences.length > MAX_SENTENCES;
+  return (truncated
+    ? sentences.slice(0, MAX_SENTENCES).join(" ") + " 뒤에 더 있어, 자세한 건 메시지로 봐줘."
+    : sentences.join(" ")
+  ).trim();
 }
 
 function start() {
