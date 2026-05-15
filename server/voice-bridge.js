@@ -155,14 +155,14 @@ async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
   const hasLocation = Boolean(locationLabel);
   const hasPhoto = Boolean(faceContext);
 
-  const voiceBullets = ["* 음성 대화체로 얘기해"];
-  if (hasLocation) voiceBullets.push("* 위치는 필요할 때만 자연스럽게 참고하고, 매번 직접 말하지 말 것");
-  if (hasPhoto) voiceBullets.push("* 사진은 굳이 묘사하지 말 것");
+  const voiceBullets = ["* speak in casual conversational tone"];
+  if (hasLocation) voiceBullets.push("* reference Loc only when natural, don't state it directly");
+  if (hasPhoto) voiceBullets.push("* don't describe Photo");
 
   const dataLines = [];
-  if (hasLocation) dataLines.push(`위치: ${locationLabel}`);
-  if (hasPhoto) dataLines.push(`사진: ${faceContext}`);
-  dataLines.push(`발화: ${userText}`);
+  if (hasLocation) dataLines.push(`Loc: ${locationLabel}`);
+  if (hasPhoto) dataLines.push(`Photo: ${faceContext}`);
+  dataLines.push(`User: ${userText}`);
 
   return `${voiceBullets.join("\n")}\n\n${dataLines.join("\n")}`;
 }
