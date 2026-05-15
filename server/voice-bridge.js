@@ -458,21 +458,39 @@ function facePositionLabels(results) {
   return labels;
 }
 
+function faceConfidenceShort(score) {
+  if (score >= 0.7) return "high";
+  if (score >= 0.5) return "mid";
+  if (score >= FACE_MATCH_THRESHOLD) return "low";
+  return "unknown";
+}
+
+function facePositionShort(idx, total) {
+  if (total === 1) return "";
+  if (total === 2) return idx === 0 ? "L" : "R";
+  if (total === 3) return ["L", "C", "R"][idx];
+  return `#${idx + 1}`;
+}
+
 function formatFaceMemoryContext(matchResult) {
   if (!matchResult || !matchResult.ok) return "";
   const count = Number(matchResult.face_count || 0);
-  if (!count) return "얼굴 없음";
+  if (!count) return "none";
   const results = matchResult.results || [];
-  const labels = facePositionLabels(results);
-  const single = results.length === 1;
-  const parts = results.map((r, idx) => {
-    const label = labels.get(idx) || `${idx + 1}번`;
+  const sorted = (results || []).map((r, idx) => {
+    const bbox = r.face && Array.isArray(r.face.bbox) ? r.face.bbox : null;
+    const centerX = bbox ? (Number(bbox[0]) + Number(bbox[2])) / 2 : idx;
+    return { r, centerX };
+  }).sort((a, b) => a.centerX - b.centerX);
+  const total = sorted.length;
+  const parts = sorted.map(({ r }, idx) => {
+    const label = facePositionShort(idx, total);
     const best = r.match || r.best_candidate;
+    const prefix = label ? `${label}=` : "";
     if (!best || typeof best.score !== "number" || best.score < FACE_MATCH_THRESHOLD) {
-      return single ? "미상" : `${label}=미상`;
+      return `${prefix}unknown`;
     }
-    const confidence = faceConfidenceLabel(best.score);
-    return single ? `${best.name}(${confidence})` : `${label}=${best.name}(${confidence})`;
+    return `${prefix}${best.name}(${faceConfidenceShort(best.score)})`;
   });
   return parts.join(", ");
 }
