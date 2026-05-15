@@ -472,7 +472,7 @@ function cleanForVoice(text) {
     .replace(/\s*[:;]\s*/g, ", ")
     .replace(/\s{2,}/g, " ")
     .split(/(?<=[.!?。!?])\s+/)
-    .slice(0, 3)
+    .slice(0, 10)
     .join(" ")
     .trim();
 }
