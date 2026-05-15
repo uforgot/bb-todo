@@ -157,7 +157,6 @@ async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
 
   const voiceBullets = ["* speak in casual conversational tone"];
   if (hasLocation) voiceBullets.push("* reference Loc only when natural, don't state it directly");
-  if (hasPhoto) voiceBullets.push("* don't describe Photo");
 
   const dataLines = [];
   if (hasLocation) dataLines.push(`Loc: ${locationLabel}`);
