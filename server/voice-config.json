@@ -89,11 +89,11 @@
 
   // [voice] 메시지 앞에 붙는 프롬프트. v3 감정 태그 가이드만 남김.
   // (한국어/문장수/마크다운 제거는 서버 cleanForVoice 후처리로 처리)
-  "promptHint": "[voice: 짧은 대화체, 한 단락.]",
+  "promptHint": "[voice: 음성 대화체로 한 단락. 엔터/줄바꿈 금지.]",
 
   // 응답 대기 타임아웃. 무거운 작업 시 빵빵 답변이 늦을 수 있어 90초 권장. iOS는 +5초 버퍼.
-  "bridgeTimeoutMs": 90000,
-  "iosWaitingTimeoutSec": 95,
+  "bridgeTimeoutMs": 240000,
+  "iosWaitingTimeoutSec": 245,
 
   // 이모지 배지 크기 (pt). 14는 너무 작음. 28~32 권장.
   "emotionEmojiSize": 30,
