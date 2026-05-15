@@ -1459,17 +1459,29 @@ const server = http.createServer(async (req, res) => {
             }
           }
           if (!imageData) { sendError(res, 400, "no image data"); return; }
-          const ext = path.extname(filename) || ".jpg";
-          const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
+          const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
           const imagePath = path.join(__dirname, "images", id);
-          fs.writeFileSync(imagePath, imageData);
-          res.writeHead(201, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ id, url: `/images/${id}` }));
+          sharp(imageData)
+            .rotate() // apply EXIF orientation before Discord upload / face matching
+            .resize(1600, 1600, { fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 82 })
+            .toBuffer()
+            .then(processed => {
+              fs.writeFileSync(imagePath, processed);
+              res.writeHead(201, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ id, url: `/images/${id}`, size: processed.length, normalized: true }));
+            })
+            .catch(() => {
+              fs.writeFileSync(imagePath, imageData);
+              res.writeHead(201, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ id, url: `/images/${id}`, size: imageData.length, normalized: false }));
+            });
         } else {
           // raw binary upload — sharp로 리사이즈 + JPEG 변환
           const id = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
           const imagePath = path.join(__dirname, "images", id);
           sharp(buffer)
+            .rotate() // apply EXIF orientation before storage
             .resize(1200, 1200, { fit: "inside", withoutEnlargement: true })
             .jpeg({ quality: 80 })
             .toBuffer()
@@ -1548,18 +1560,41 @@ const server = http.createServer(async (req, res) => {
         console.warn("[voice-config] read failed, using defaults:", e.message);
       }
       const settings = cfg.voiceSettings || {};
+      const normalizeVoiceSettings = (raw, fallback = {}) => {
+        const source = raw && typeof raw === "object" ? raw : {};
+        return {
+          stability: typeof source.stability === "number" ? source.stability : (typeof fallback.stability === "number" ? fallback.stability : 0.5),
+          similarityBoost: typeof source.similarityBoost === "number" ? source.similarityBoost : (typeof fallback.similarityBoost === "number" ? fallback.similarityBoost : 0.75),
+          style: typeof source.style === "number" ? source.style : (typeof fallback.style === "number" ? fallback.style : 0),
+          speed: typeof source.speed === "number" ? source.speed : (typeof fallback.speed === "number" ? fallback.speed : 1.0),
+        };
+      };
+      const normalizedSettings = normalizeVoiceSettings(settings);
+      const bots = cfg.bots && typeof cfg.bots === "object"
+        ? Object.fromEntries(Object.entries(cfg.bots).map(([key, raw]) => {
+            const bot = raw && typeof raw === "object" ? raw : {};
+            return [key, {
+              displayName: typeof bot.displayName === "string" ? bot.displayName : undefined,
+              discordUserId: typeof bot.discordUserId === "string" ? bot.discordUserId : undefined,
+              voiceId: typeof bot.voiceId === "string" ? bot.voiceId : undefined,
+              gender: typeof bot.gender === "string" ? bot.gender : undefined,
+              color: typeof bot.color === "string" ? bot.color : undefined,
+              ttsModel: typeof bot.ttsModel === "string" ? bot.ttsModel : undefined,
+              voiceSettings: normalizeVoiceSettings(bot.voiceSettings, normalizedSettings),
+            }];
+          }))
+        : undefined;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         voiceId: cfg.voiceId || "NaQdbkW5gNZD8wfwXeTV",
         ttsModel: cfg.ttsModel || "eleven_v3",
         sttModel: cfg.sttModel || "scribe_v1",
-        voiceSettings: {
-          stability: typeof settings.stability === "number" ? settings.stability : 0.5,
-          similarityBoost: typeof settings.similarityBoost === "number" ? settings.similarityBoost : 0.75,
-          style: typeof settings.style === "number" ? settings.style : 0,
-          speed: typeof settings.speed === "number" ? settings.speed : 1.0,
-        },
+        voiceSettings: normalizedSettings,
+        bridgeTimeoutMs: typeof cfg.bridgeTimeoutMs === "number" ? cfg.bridgeTimeoutMs : 90000,
         iosWaitingTimeoutSec: typeof cfg.iosWaitingTimeoutSec === "number" ? cfg.iosWaitingTimeoutSec : 95,
+        emotionEmojiSize: typeof cfg.emotionEmojiSize === "number" ? cfg.emotionEmojiSize : 30,
+        emotionEmojiMap: cfg.emotionEmojiMap && typeof cfg.emotionEmojiMap === "object" ? cfg.emotionEmojiMap : undefined,
+        bots,
       }));
 
     } else if (url.pathname === "/health") {

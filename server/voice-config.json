@@ -1,0 +1,114 @@
+{
+  // ElevenLabs 음성 ID — 대시보드 Voices에서 복사. 봇별로 바꿔서 캐릭터 톤 변경.
+  // (legacy 단일 voiceId — bots 블록의 default로도 사용. 호환성 유지.)
+  "voiceId": "NaQdbkW5gNZD8wfwXeTV",
+
+  // 봇별 보이스 매핑. speaker_id ↔ ElevenLabs voiceId.
+  // - voiceId 비워두면 위의 legacy "voiceId"로 fallback.
+  // - voiceSettings 비워두면 아래 공용 voiceSettings 사용.
+  // 형주가 ElevenLabs 대시보드에서 들어보고 직접 채움 (팡팡 여, 붕붕 여, 오빵 남).
+  "bots": {
+    "bbangbbang": {
+      "displayName": "빵빵",
+      "discordUserId": "1471495923400970377",
+      "voiceId": "NaQdbkW5gNZD8wfwXeTV",
+      "gender": "male",
+      "color": "#F59E0B",
+      "ttsModel": "eleven_v3",
+      "voiceSettings": {
+        "stability": 0.4,
+        "similarityBoost": 0.65,
+        "style": 0.35,
+        "speed": 1.05
+      }
+    },
+    "pangpang": {
+      "displayName": "팡팡",
+      "discordUserId": "1472592813043744832",
+      "voiceId": "br0MPoLVxuslVxf61qHn",
+      "gender": "female",
+      "color": "#EC4899",
+      "ttsModel": "eleven_v3",
+      "voiceSettings": {
+        "stability": 0.5,
+        "similarityBoost": 0.75,
+        "style": 0,
+        "speed": 1.0
+      }
+    },
+    "boongboong": {
+      "displayName": "붕붕",
+      "discordUserId": "1491449020579708948",
+      "voiceId": "yM93hbw8Qtvdma2wCnJG",
+      "gender": "female",
+      "color": "#8B5CF6",
+      "ttsModel": "eleven_v3",
+      "voiceSettings": {
+        "stability": 0.5,
+        "similarityBoost": 0.70,
+        "style": 0.42,
+        "speed": 1.4
+      }
+    },
+    "obbang": {
+      "displayName": "오빵",
+      "discordUserId": "1490773072813232138",
+      "voiceId": "prgs92xTdxeczorJi7ez",
+      "gender": "male",
+      "color": "#10B981",
+      "ttsModel": "eleven_v3",
+      "voiceSettings": {
+        "stability": 0.5,
+        "similarityBoost": 0.75,
+        "style": 0,
+        "speed": 1.0
+      }
+    }
+  },
+
+  // TTS 모델. 후보:
+  //   eleven_v3            — 최고 품질, 약간 느림
+  //   eleven_turbo_v2_5    — 빠르고 자연스러움 (실시간 권장)
+  //   eleven_flash_v2_5    — 가장 빠름, 표현력은 낮음
+  "ttsModel": "eleven_v3",
+
+  // STT 모델 (ElevenLabs Scribe). 현재 한국어 지원되는 건 scribe_v1.
+  "sttModel": "scribe_v1",
+
+  // 합성 톤 미세조정.
+  "voiceSettings": {
+    // 0~1. 높을수록 톤이 일정해짐(딱딱), 낮을수록 표현이 풍부해지지만 들쭉날쭉.
+    "stability": 0.4,
+    // 0~1. 학습된 보이스랑 비슷하게 유지하는 강도. 너무 높으면 부자연스러움.
+    "similarityBoost": 0.65,
+    // 0~1. 캐릭터성/감정 과장도. 0이 가장 안정적.
+    "style": 0.35,
+    // 0.7~1.2 범위 권장. 1.0이 기본, 키울수록 빨라짐.
+    "speed": 1.05
+  },
+
+  // [voice] 메시지 앞에 붙는 프롬프트. v3 감정 태그 가이드만 남김.
+  // (한국어/문장수/마크다운 제거는 서버 cleanForVoice 후처리로 처리)
+  "promptHint": "[voice: 한 단락, 엔터 금지. 감정 태그 1-2개만 사용: [calm] [warm] [happy] [laughs softly] [whispers].]",
+
+  // 응답 대기 타임아웃. 무거운 작업 시 빵빵 답변이 늦을 수 있어 90초 권장. iOS는 +5초 버퍼.
+  "bridgeTimeoutMs": 90000,
+  "iosWaitingTimeoutSec": 95,
+
+  // 이모지 배지 크기 (pt). 14는 너무 작음. 28~32 권장.
+  "emotionEmojiSize": 30,
+
+  // 감정 태그 → 이모지 매핑. 한 감정에 한 이모지. 얼굴 위주 탈피해서 동물/음식/천체/하트 섞음.
+  // 그냥 이 값만 바꾸면 다음 답변부터 즉시 반영 (앱 빌드 불필요).
+  "emotionEmojiMap": {
+    "laugh":     "🤣",
+    "happy":     "🌻",
+    "warm":      "🧡",
+    "calm":      "🌙",
+    "whisper":   "🤫",
+    "sad":       "🥲",
+    "surprised": "✨",
+    "angry":     "🌶️",
+    "default":   "💫"
+  }
+}
