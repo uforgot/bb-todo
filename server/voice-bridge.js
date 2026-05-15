@@ -475,7 +475,7 @@ function facePositionShort(idx, total) {
 function formatFaceMemoryContext(matchResult) {
   if (!matchResult || !matchResult.ok) return "";
   const count = Number(matchResult.face_count || 0);
-  if (!count) return "none";
+  if (!count) return "";
   const results = matchResult.results || [];
   const sorted = (results || []).map((r, idx) => {
     const bbox = r.face && Array.isArray(r.face.bbox) ? r.face.bbox : null;
