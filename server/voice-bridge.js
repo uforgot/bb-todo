@@ -82,6 +82,35 @@ function readTimeoutMs() {
 }
 
 let placesCache = { expiresAt: 0, places: [] };
+const GEOCODE_API_KEY = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_PLACE_API_KEY || "";
+const GEOCODE_CACHE_TTL_MS = Number(process.env.GEOCODE_CACHE_TTL_MS || 24 * 60 * 60 * 1000);
+const geocodeCache = new Map(); // key: "lat4,lng4" → { name, expiresAt }
+
+async function reverseGeocodeDong(location) {
+  if (!GEOCODE_API_KEY) return "";
+  const key = `${location.lat.toFixed(4)},${location.lng.toFixed(4)}`;
+  const now = Date.now();
+  const cached = geocodeCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.name;
+
+  try {
+    const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+    url.searchParams.set("latlng", `${location.lat},${location.lng}`);
+    url.searchParams.set("language", "ko");
+    url.searchParams.set("result_type", "sublocality_level_2");
+    url.searchParams.set("key", GEOCODE_API_KEY);
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error(`geocode ${res.status}`);
+    const data = await res.json();
+    const first = Array.isArray(data?.results) ? data.results[0] : null;
+    const dong = first?.address_components?.find((c) => c.types?.includes("sublocality_level_2"))?.long_name || "";
+    geocodeCache.set(key, { name: dong, expiresAt: now + GEOCODE_CACHE_TTL_MS });
+    return dong;
+  } catch (e) {
+    console.warn("[voice-bridge] reverse geocode failed:", e.message);
+    return "";
+  }
+}
 
 function normalizeLocation(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -147,6 +176,11 @@ async function resolveLocationLabel(rawLocation) {
     console.warn("[voice-bridge] places lookup failed:", e.message);
   }
 
+  const dong = await reverseGeocodeDong(location);
+  if (dong) {
+    console.log(`[voice-bridge] location geocoded: ${dong}`);
+    return dong;
+  }
   return "";
 }
 
