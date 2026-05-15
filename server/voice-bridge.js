@@ -147,7 +147,7 @@ async function resolveLocationLabel(rawLocation) {
     console.warn("[voice-bridge] places lookup failed:", e.message);
   }
 
-  return "미상";
+  return "";
 }
 
 async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
