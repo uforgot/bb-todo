@@ -102,6 +102,8 @@ try { db.exec("ALTER TABLE items ADD COLUMN is_today INTEGER DEFAULT 0"); } catc
 try { db.exec("ALTER TABLE items ADD COLUMN review_emoji TEXT"); } catch {}
 // Migration: owner
 try { db.exec("ALTER TABLE items ADD COLUMN owner TEXT"); } catch {}
+// Migration: owner 빵빵/기타 봇 → AI 통일 (owner 모델은 AI / hyungju 둘로 단순화)
+try { db.exec("UPDATE items SET owner='AI' WHERE owner IS NOT NULL AND owner NOT IN ('hyungju','AI')"); } catch {}
 // Migration: discord channel mapping
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_channel_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_thread_id TEXT"); } catch {}
