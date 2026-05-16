@@ -155,6 +155,7 @@ async function resolveLocationLabel(rawLocation) {
   const location = normalizeLocation(rawLocation);
   if (!location) return "";
 
+  let aliasName = "";
   try {
     const places = await fetchPlaces();
     let best = null;
@@ -170,18 +171,33 @@ async function resolveLocationLabel(rawLocation) {
     }
     if (best) {
       console.log(`[voice-bridge] location matched: ${best.name} (${Math.round(best.distanceM)}m/${best.radiusM}m)`);
-      return best.name;
+      aliasName = best.name;
     }
   } catch (e) {
     console.warn("[voice-bridge] places lookup failed:", e.message);
   }
 
   const dong = await reverseGeocodeDong(location);
+  if (aliasName && dong) return `${aliasName} (${dong})`;
+  if (aliasName) return aliasName;
   if (dong) {
     console.log(`[voice-bridge] location geocoded: ${dong}`);
     return dong;
   }
   return "";
+}
+
+function buildTimeLabel(date = new Date()) {
+  const weekdays = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
+  const day = weekdays[date.getDay()];
+  const h = date.getHours();
+  let period;
+  if (h >= 6 && h < 11) period = "오전";
+  else if (h >= 11 && h < 14) period = "점심";
+  else if (h >= 14 && h < 18) period = "오후";
+  else if (h >= 18 && h < 22) period = "저녁";
+  else period = "밤";
+  return `${day} ${period}`;
 }
 
 async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
@@ -192,7 +208,9 @@ async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
   const voiceBullets = ["* speak in casual conversational tone"];
   if (hasLocation) voiceBullets.push("* reference Loc only when natural, don't state it directly");
 
+  const timeLabel = buildTimeLabel();
   const dataLines = [];
+  dataLines.push(`Time: ${timeLabel}`);
   if (hasLocation) dataLines.push(`Loc: ${locationLabel}`);
   if (hasPhoto) dataLines.push(`Photo: ${faceContext}`);
   dataLines.push(`User: ${userText}`);
