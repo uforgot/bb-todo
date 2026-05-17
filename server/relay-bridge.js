@@ -62,15 +62,17 @@ async function handleDirectDiscordFaceMessage(msg) {
     const filePath = await vb.downloadDiscordAttachment(imageAttachment);
     const result = await vb.runFaceCli(["match", filePath, "--threshold", String(vb.FACE_MATCH_THRESHOLD)]);
     const faceCount = Number((result && result.face_count) || 0);
+    let faceSummary = "";
     if (faceCount) {
+      faceSummary = vb.formatFaceDiscordSummary(result);
       await vb.reactQuietly(msg, vb.hasKnownFace(result) ? "✅" : "❓");
-      await msg.reply({ content: vb.formatFaceDiscordSummary(result), allowedMentions: { repliedUser: false } });
+      await msg.reply({ content: faceSummary, allowedMentions: { repliedUser: false } });
       console.log("[relay-bridge] direct discord face match handled");
     } else {
       console.log("[relay-bridge] direct discord face match: no face");
     }
     // face match는 followup 흐름을 막지 않는다 (사진+텍스트 같이 온 케이스 지원).
-    return false;
+    return { faceSummary };
   }
 
   return false;
@@ -138,24 +140,29 @@ async function resolveReplyTargetBot(msg, byDiscordId, byKey) {
   }
 }
 
-async function relayUnmentionedFollowup(msg) {
+async function relayUnmentionedFollowup(msg, extraContext) {
   if (msg.author.bot || msg.webhookId != null) return false;
   if (isVoicePrefix(msg)) return false;
-  if (!String(msg.content || "").trim()) return false;
+  const text = String(msg.content || "").trim();
+  const contextText = String((extraContext && extraContext.faceSummary) || "").trim();
+  if (!text && !contextText) return false;
 
   const { byDiscordId, byKey } = vb.readBotsConfig();
   if (mentionsConfiguredBot(msg, byDiscordId)) return false;
 
+  // 텍스트 없이 사진만 → "봐봐 + face 요약" 형태로 직전 봇에게 forward
+  const relayContent = text || `봐봐\n${contextText}`;
+
   // Discord reply(댓글)로 봇 지정한 경우 → 그 봇으로 직행
   const replyTarget = await resolveReplyTargetBot(msg, byDiscordId, byKey);
   if (replyTarget) {
-    return postFollowupViaWebhook(msg.content, replyTarget, msg.id);
+    return postFollowupViaWebhook(relayContent, replyTarget, msg.id);
   }
 
   // 일반 무멘션 → 직전 등록된 봇 찾아서 relay
   const hit = await findPreviousConfiguredBotMessage(msg, byDiscordId, byKey);
   if (!hit) return false;
-  return postFollowupViaWebhook(msg.content, hit.bot, msg.id);
+  return postFollowupViaWebhook(relayContent, hit.bot, msg.id);
 }
 
 function attach(client, { isWatchedVoiceChannel } = {}) {
@@ -166,9 +173,11 @@ function attach(client, { isWatchedVoiceChannel } = {}) {
     if (!isWatched(msg)) return;
 
     // Discord 직접 사진 (face match/register)
+    let faceContext = null;
     try {
-      const handledFace = await handleDirectDiscordFaceMessage(msg);
-      if (handledFace) return;
+      const faceResult = await handleDirectDiscordFaceMessage(msg);
+      if (faceResult === true) return; // register: 종결
+      if (faceResult && typeof faceResult === "object") faceContext = faceResult;
     } catch (e) {
       console.error("[relay-bridge] direct discord face handler error:", e.message);
       try {
@@ -179,7 +188,7 @@ function attach(client, { isWatchedVoiceChannel } = {}) {
 
     // 무멘션 followup → 직전 봇에게 멘션 박아 webhook으로 relay
     try {
-      await relayUnmentionedFollowup(msg);
+      await relayUnmentionedFollowup(msg, faceContext);
     } catch (e) {
       console.error("[relay-bridge] followup relay error:", e.message);
     }
