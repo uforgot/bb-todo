@@ -83,11 +83,13 @@ function mentionsConfiguredBot(msg, botsByDiscordId) {
   return false;
 }
 
-async function findPreviousBotMessage(msg) {
+async function findPreviousConfiguredBotMessage(msg, byDiscordId, byKey) {
   try {
-    const fetched = await msg.channel.messages.fetch({ limit: 10, before: msg.id });
+    const fetched = await msg.channel.messages.fetch({ limit: 15, before: msg.id });
     for (const prev of fetched.values()) {
-      if (prev.author?.bot) return prev;
+      if (!prev.author?.bot) continue;
+      const bot = vb.resolveConfiguredBotFromAuthor(prev.author, prev.member, byDiscordId, byKey);
+      if (bot) return { prev, bot };
     }
   } catch (e) {
     console.warn("[relay-bridge] fetch previous messages failed:", e.message);
@@ -95,7 +97,7 @@ async function findPreviousBotMessage(msg) {
   return null;
 }
 
-async function postFollowupViaWebhook(text, targetBot) {
+async function postFollowupViaWebhook(text, targetBot, replyToMessageId) {
   if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
   if (!targetBot || !targetBot.discordUserId) return false;
 
@@ -107,6 +109,9 @@ async function postFollowupViaWebhook(text, targetBot) {
     username: "uforgot relay",
     allowed_mentions: { users: [targetBot.discordUserId] },
   };
+  if (replyToMessageId) {
+    payload.message_reference = { message_id: replyToMessageId };
+  }
 
   const res = await fetch(VOICE_WEBHOOK_URL, {
     method: "POST",
@@ -117,7 +122,7 @@ async function postFollowupViaWebhook(text, targetBot) {
     const body = await res.text();
     throw new Error(`POST relay webhook ${res.status}: ${body.slice(0, 200)}`);
   }
-  console.log(`[relay-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId})`);
+  console.log(`[relay-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId})${replyToMessageId ? " (as reply)" : ""}`);
   return true;
 }
 
@@ -130,13 +135,10 @@ async function relayUnmentionedFollowup(msg) {
   const { byDiscordId, byKey } = vb.readBotsConfig();
   if (mentionsConfiguredBot(msg, byDiscordId)) return false;
 
-  const previous = await findPreviousBotMessage(msg);
-  if (!previous) return false;
+  const hit = await findPreviousConfiguredBotMessage(msg, byDiscordId, byKey);
+  if (!hit) return false;
 
-  const targetBot = vb.resolveConfiguredBotFromAuthor(previous.author, previous.member, byDiscordId, byKey);
-  if (!targetBot) return false;
-
-  return postFollowupViaWebhook(msg.content, targetBot);
+  return postFollowupViaWebhook(msg.content, hit.bot, msg.id);
 }
 
 function attach(client, { isWatchedVoiceChannel } = {}) {
