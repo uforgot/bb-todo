@@ -26,6 +26,7 @@ const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD || 0.4);
 const DISCORD_IMAGE_DIR = path.join(__dirname, "images", "discord-face");
 const DEFAULT_TIMEOUT_MS = 90_000;
 const OPENCLAW_CLI = process.env.OPENCLAW_CLI || path.join(process.env.HOME || "", "Library/pnpm/openclaw");
+const FOLLOWUP_RELAY_ENABLED = process.env.BB_FOLLOWUP_RELAY_ENABLED === "1";
 const OPENCLAW_AGENT_IDS = {
   bbangbbang: "main",
   pangpang: "pang",
@@ -525,6 +526,7 @@ async function resolvePreviousMessage(msg) {
 }
 
 async function relayUnmentionedFollowup(msg) {
+  if (!FOLLOWUP_RELAY_ENABLED) return false;
   if (msg.author.bot || msg.webhookId != null) return false;
   if (msg.reference?.messageId) return false;
   if (hasImageAttachment(msg)) return false;
