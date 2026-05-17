@@ -232,6 +232,49 @@ function buildTimeLabel(date = new Date()) {
   return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${day} ${period} ${hh}:${mm}`;
 }
 
+// 양력 고정 + 한국 기념일/명절 + 음력 명절(연도별 매핑)
+const FIXED_HOLIDAYS = {
+  "01-01": "신정",
+  "02-14": "발렌타인데이",
+  "03-01": "삼일절",
+  "03-14": "화이트데이",
+  "05-05": "어린이날",
+  "05-08": "어버이날",
+  "05-15": "스승의날",
+  "06-06": "현충일",
+  "08-15": "광복절",
+  "10-03": "개천절",
+  "10-09": "한글날",
+  "10-31": "핼러윈",
+  "11-11": "빼빼로데이",
+  "12-24": "크리스마스 이브",
+  "12-25": "크리스마스",
+  "12-31": "한 해의 마지막 날",
+};
+
+// 음력 기반 한국 공휴일 (양력 환산, 연도별)
+const VARIABLE_HOLIDAYS = {
+  2026: { "02-16": "설날 연휴", "02-17": "설날", "02-18": "설날 연휴", "05-24": "부처님오신날", "09-24": "추석 연휴", "09-25": "추석", "09-26": "추석 연휴" },
+  2027: { "02-06": "설날 연휴", "02-07": "설날", "02-08": "설날 연휴", "05-13": "부처님오신날", "09-14": "추석 연휴", "09-15": "추석", "09-16": "추석 연휴" },
+  2028: { "01-26": "설날 연휴", "01-27": "설날", "01-28": "설날 연휴", "05-02": "부처님오신날", "10-02": "추석 연휴", "10-03": "추석", "10-04": "추석 연휴" },
+};
+
+function holidayFor(date) {
+  const mmdd = `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const year = date.getFullYear();
+  return (VARIABLE_HOLIDAYS[year] && VARIABLE_HOLIDAYS[year][mmdd]) || FIXED_HOLIDAYS[mmdd] || null;
+}
+
+function buildHolidayLabel(date = new Date()) {
+  const today = holidayFor(date);
+  const tomorrow = new Date(date.getTime() + 24 * 60 * 60 * 1000);
+  const next = holidayFor(tomorrow);
+  const parts = [];
+  if (today) parts.push(`오늘 ${today}`);
+  if (next) parts.push(`내일 ${next}`);
+  return parts.length ? parts.join(", ") : null;
+}
+
 function summarizeVoiceContextForLog(text) {
   const lines = String(text || "").split("\n");
   const time = lines.find((line) => line.startsWith("Time: ")) || "Time: (missing)";
@@ -252,8 +295,10 @@ async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
   if (hasLocation) voiceBullets.push("* reference Loc only when natural, don't state it directly");
 
   const timeLabel = buildTimeLabel();
+  const holidayLabel = buildHolidayLabel();
   const dataLines = [];
   dataLines.push(`Time: ${timeLabel}`);
+  if (holidayLabel) dataLines.push(`Holiday: ${holidayLabel}`);
   if (hasLocation) dataLines.push(`Loc: ${locationLabel}`);
   if (hasPhoto) dataLines.push(`Photo: ${faceContext}`);
   dataLines.push(`User: ${userText}`);
