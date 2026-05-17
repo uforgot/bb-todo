@@ -62,14 +62,15 @@ async function handleDirectDiscordFaceMessage(msg) {
     const filePath = await vb.downloadDiscordAttachment(imageAttachment);
     const result = await vb.runFaceCli(["match", filePath, "--threshold", String(vb.FACE_MATCH_THRESHOLD)]);
     const faceCount = Number((result && result.face_count) || 0);
-    if (!faceCount) {
-      console.log("[relay-bridge] direct discord face match: no face, ignored");
-      return true;
+    if (faceCount) {
+      await vb.reactQuietly(msg, vb.hasKnownFace(result) ? "✅" : "❓");
+      await msg.reply({ content: vb.formatFaceDiscordSummary(result), allowedMentions: { repliedUser: false } });
+      console.log("[relay-bridge] direct discord face match handled");
+    } else {
+      console.log("[relay-bridge] direct discord face match: no face");
     }
-    await vb.reactQuietly(msg, vb.hasKnownFace(result) ? "✅" : "❓");
-    await msg.reply({ content: vb.formatFaceDiscordSummary(result), allowedMentions: { repliedUser: false } });
-    console.log("[relay-bridge] direct discord face match handled");
-    return true;
+    // face match는 followup 흐름을 막지 않는다 (사진+텍스트 같이 온 케이스 지원).
+    return false;
   }
 
   return false;
