@@ -36,7 +36,7 @@ async function findPreviousConfiguredBotMessage(msg, byDiscordId, byKey) {
 }
 
 const RELAY_PROMPT = process.env.RELAY_PROMPT
-  || "위 답글로 참조된 원본 메시지의 텍스트와 첨부(이미지 포함)를 모두 확인하고 답해줘.";
+  || "[Relayed] User didn't mention you directly. Read the referenced message (text + images) and reply naturally.";
 
 async function relayViaReply(msg, targetBot) {
   if (!targetBot || !targetBot.discordUserId) return false;
