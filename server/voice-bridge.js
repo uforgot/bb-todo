@@ -220,13 +220,16 @@ function buildTimeLabel(date = new Date()) {
   const weekdays = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
   const day = weekdays[date.getDay()];
   const h = date.getHours();
+  const m = date.getMinutes();
   let period;
   if (h >= 6 && h < 11) period = "오전";
   else if (h >= 11 && h < 14) period = "점심";
   else if (h >= 14 && h < 18) period = "오후";
   else if (h >= 18 && h < 22) period = "저녁";
   else period = "밤";
-  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${day} ${period}`;
+  const hh = String(h).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${day} ${period} ${hh}:${mm}`;
 }
 
 function summarizeVoiceContextForLog(text) {
