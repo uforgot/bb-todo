@@ -126,18 +126,35 @@ async function postFollowupViaWebhook(text, targetBot, replyToMessageId) {
   return true;
 }
 
+async function resolveReplyTargetBot(msg, byDiscordId, byKey) {
+  if (!msg.reference?.messageId) return null;
+  try {
+    const referenced = await msg.channel.messages.fetch(msg.reference.messageId);
+    if (!referenced?.author?.bot) return null;
+    return vb.resolveConfiguredBotFromAuthor(referenced.author, referenced.member, byDiscordId, byKey);
+  } catch (e) {
+    console.warn("[relay-bridge] fetch reply target failed:", e.message);
+    return null;
+  }
+}
+
 async function relayUnmentionedFollowup(msg) {
   if (msg.author.bot || msg.webhookId != null) return false;
-  if (msg.reference?.messageId) return false;
   if (isVoicePrefix(msg)) return false;
   if (!String(msg.content || "").trim()) return false;
 
   const { byDiscordId, byKey } = vb.readBotsConfig();
   if (mentionsConfiguredBot(msg, byDiscordId)) return false;
 
+  // Discord reply(댓글)로 봇 지정한 경우 → 그 봇으로 직행
+  const replyTarget = await resolveReplyTargetBot(msg, byDiscordId, byKey);
+  if (replyTarget) {
+    return postFollowupViaWebhook(msg.content, replyTarget, msg.id);
+  }
+
+  // 일반 무멘션 → 직전 등록된 봇 찾아서 relay
   const hit = await findPreviousConfiguredBotMessage(msg, byDiscordId, byKey);
   if (!hit) return false;
-
   return postFollowupViaWebhook(msg.content, hit.bot, msg.id);
 }
 
