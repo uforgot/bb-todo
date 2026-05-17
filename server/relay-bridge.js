@@ -38,15 +38,27 @@ async function findPreviousConfiguredBotMessage(msg, byDiscordId, byKey) {
 const RELAY_PROMPT = process.env.RELAY_PROMPT
   || "[Relayed] User didn't mention you directly. Read the referenced message (text + images) and reply naturally.";
 
+function collectAttachmentFiles(msg) {
+  const files = [];
+  for (const att of msg.attachments.values()) {
+    if (!att?.url) continue;
+    files.push({ attachment: att.url, name: att.name || undefined });
+  }
+  return files;
+}
+
 async function relayViaReply(msg, targetBot) {
   if (!targetBot || !targetBot.discordUserId) return false;
   // listener bot이 user 메시지의 댓글(reply)로 멘션 + 짧은 prompt를 박는다.
   // 봇은 reply reference를 따라가서 원문(텍스트/이미지)을 직접 읽고 응답한다.
+  // 단, harness가 reference의 image attachment까지 따라오진 못해서 relay reply에 재첨부한다.
+  const files = collectAttachmentFiles(msg);
   await msg.reply({
     content: `<@${targetBot.discordUserId}> ${RELAY_PROMPT}`,
     allowedMentions: { users: [targetBot.discordUserId], repliedUser: false },
+    files: files.length ? files : undefined,
   });
-  console.log(`[relay-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId}) (as reply)`);
+  console.log(`[relay-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId}) (as reply${files.length ? `, ${files.length} attachment(s)` : ""})`);
   return true;
 }
 
