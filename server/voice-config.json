@@ -14,6 +14,7 @@
       "voiceId": "NaQdbkW5gNZD8wfwXeTV",
       "gender": "male",
       "color": "#F59E0B",
+      "avatarUrl": "/bot/bbang.png",
       "ttsModel": "eleven_v3",
       "voiceSettings": {
         "stability": 0.4,
@@ -28,6 +29,7 @@
       "voiceId": "br0MPoLVxuslVxf61qHn",
       "gender": "female",
       "color": "#EC4899",
+      "avatarUrl": "/bot/pang.png",
       "ttsModel": "eleven_v3",
       "voiceSettings": {
         "stability": 0.5,
@@ -39,9 +41,10 @@
     "boongboong": {
       "displayName": "붕붕",
       "discordUserId": "1491449020579708948",
-      "voiceId": "yM93hbw8Qtvdma2wCnJG",
+      "voiceId": "sf8Bpb1IU97NI9BHSMRf",
       "gender": "female",
       "color": "#8B5CF6",
+      "avatarUrl": "/bot/boong.png",
       "ttsModel": "eleven_v3",
       "voiceSettings": {
         "stability": 0.3,
@@ -56,6 +59,7 @@
       "voiceId": "prgs92xTdxeczorJi7ez",
       "gender": "male",
       "color": "#10B981",
+      "avatarUrl": "/bot/obbang.png",
       "ttsModel": "eleven_v3",
       "voiceSettings": {
         "stability": 0.5,
@@ -91,6 +95,9 @@
   "bridgeTimeoutMs": 240000,
   "iosWaitingTimeoutSec": 245,
 
+  // 앱에서 ElevenLabs TTS로 보낼 최대 문장 수. 채팅에는 서버가 보낸 전체 텍스트를 그대로 표시.
+  "ttsMaxSentences": 5,
+
   // 무음 자동 종료 — 녹음 중 averagePower가 임계치 미만으로 holdMs 동안 지속되면 자동 stopAndSend.
   "silenceThresholdDb": -40,
   "silenceHoldMs": 1500,
@@ -105,11 +112,11 @@
     "laugh":     "🤣",
     "happy":     "🌻",
     "warm":      "🧡",
-    "calm":      "🌙",
+    "calm":      "",
     "whisper":   "🤫",
     "sad":       "🥲",
     "surprised": "✨",
     "angry":     "🌶️",
-    "default":   "💫"
+    "default":   ""
   }
 }

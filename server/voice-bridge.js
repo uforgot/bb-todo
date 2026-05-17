@@ -75,6 +75,12 @@ function resolveBotForMention(mentionKey, botsByKey) {
   return botsByKey[DEFAULT_BOT_KEY] || null;
 }
 
+function isWatchedVoiceChannel(msg) {
+  if (BB_CHANNEL_IDS.includes(msg.channelId)) return true;
+  const parentId = msg.channel && typeof msg.channel.parentId === "string" ? msg.channel.parentId : null;
+  return Boolean(parentId && BB_CHANNEL_IDS.includes(parentId));
+}
+
 function readTimeoutMs() {
   const cfg = readConfig();
   const v = Number(cfg.bridgeTimeoutMs);
@@ -85,6 +91,22 @@ let placesCache = { expiresAt: 0, places: [] };
 const GEOCODE_API_KEY = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_PLACE_API_KEY || "";
 const GEOCODE_CACHE_TTL_MS = Number(process.env.GEOCODE_CACHE_TTL_MS || 24 * 60 * 60 * 1000);
 const geocodeCache = new Map(); // key: "lat4,lng4" → { name, expiresAt }
+
+function pickAddressPart(result, types) {
+  const components = Array.isArray(result?.address_components) ? result.address_components : [];
+  return components.find((component) => types.some((type) => component.types?.includes(type)))?.long_name || "";
+}
+
+function formatCoarseAddress(results) {
+  for (const result of results) {
+    const dong = pickAddressPart(result, ["sublocality_level_2", "sublocality_level_3", "neighborhood"]);
+    const gu = pickAddressPart(result, ["sublocality_level_1", "administrative_area_level_2"]);
+    if (gu && dong) return `${gu} ${dong}`;
+    if (dong) return dong;
+    if (gu) return gu;
+  }
+  return "";
+}
 
 async function reverseGeocodeDong(location) {
   if (!GEOCODE_API_KEY) return "";
@@ -97,15 +119,14 @@ async function reverseGeocodeDong(location) {
     const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
     url.searchParams.set("latlng", `${location.lat},${location.lng}`);
     url.searchParams.set("language", "ko");
-    url.searchParams.set("result_type", "sublocality_level_2");
     url.searchParams.set("key", GEOCODE_API_KEY);
     const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error(`geocode ${res.status}`);
     const data = await res.json();
-    const first = Array.isArray(data?.results) ? data.results[0] : null;
-    const dong = first?.address_components?.find((c) => c.types?.includes("sublocality_level_2"))?.long_name || "";
-    geocodeCache.set(key, { name: dong, expiresAt: now + GEOCODE_CACHE_TTL_MS });
-    return dong;
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const address = formatCoarseAddress(results);
+    geocodeCache.set(key, { name: address, expiresAt: now + GEOCODE_CACHE_TTL_MS });
+    return address;
   } catch (e) {
     console.warn("[voice-bridge] reverse geocode failed:", e.message);
     return "";
@@ -126,6 +147,14 @@ function normalizeLocation(raw) {
     accuracy: Number.isFinite(accuracy) ? accuracy : null,
     ts,
   };
+}
+
+function summarizeLocationForLog(rawLocation) {
+  const location = normalizeLocation(rawLocation);
+  if (!rawLocation) return "missing";
+  if (!location) return `invalid keys=${Object.keys(rawLocation || {}).join(",") || "none"}`;
+  const accuracy = location.accuracy == null ? "unknown" : `${Math.round(location.accuracy)}m`;
+  return `present accuracy=${accuracy} ts=${location.ts ? "yes" : "no"}`;
 }
 
 function distanceMeters(a, b) {
@@ -197,7 +226,15 @@ function buildTimeLabel(date = new Date()) {
   else if (h >= 14 && h < 18) period = "오후";
   else if (h >= 18 && h < 22) period = "저녁";
   else period = "밤";
-  return `${day} ${period}`;
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${day} ${period}`;
+}
+
+function summarizeVoiceContextForLog(text) {
+  const lines = String(text || "").split("\n");
+  const time = lines.find((line) => line.startsWith("Time: ")) || "Time: (missing)";
+  const loc = lines.some((line) => line.startsWith("Loc: ")) ? "Loc: yes" : "Loc: no";
+  const photo = lines.some((line) => line.startsWith("Photo: ")) ? "Photo: yes" : "Photo: no";
+  return `${time} | ${loc} | ${photo}`;
 }
 
 async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
@@ -205,7 +242,10 @@ async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
   const hasLocation = Boolean(locationLabel);
   const hasPhoto = Boolean(faceContext);
 
-  const voiceBullets = ["* speak in casual conversational tone"];
+  const voiceBullets = [
+    "* speak in casual conversational tone",
+    "* because this is a voice response, avoid long or overly structured explanations; answer like a short natural conversation",
+  ];
   if (hasLocation) voiceBullets.push("* reference Loc only when natural, don't state it directly");
 
   const timeLabel = buildTimeLabel();
@@ -282,8 +322,11 @@ function resolveLocalImageAttachment(imageUrl) {
 function buildMultipartWebhookRequest(payload, attachment) {
   const form = new FormData();
   form.append("payload_json", JSON.stringify(payload));
-  const bytes = fs.readFileSync(attachment.filePath);
-  form.append("files[0]", new Blob([bytes], { type: attachment.contentType }), attachment.filename);
+  const attachments = Array.isArray(attachment) ? attachment : [attachment];
+  attachments.forEach((item, index) => {
+    const bytes = fs.readFileSync(item.filePath);
+    form.append(`files[${index}]`, new Blob([bytes], { type: item.contentType }), item.filename);
+  });
   return { method: "POST", body: form };
 }
 
@@ -338,6 +381,47 @@ function formatFaceDiscordSummary(matchResult) {
     : "";
   return `얼굴 ${count}명\n${parts.join("\n")}${commandText}`;
 }
+
+function hasKnownFace(matchResult) {
+  const results = matchResult && Array.isArray(matchResult.results) ? matchResult.results : [];
+  return results.some((r) => {
+    const best = r.match || r.best_candidate;
+    return best && typeof best.score === "number" && best.score >= FACE_MATCH_THRESHOLD;
+  });
+}
+
+async function reactQuietly(msg, emoji) {
+  try {
+    await msg.react(emoji);
+  } catch (e) {
+    console.error(`[voice-bridge] failed to react ${emoji}:`, e.message);
+  }
+}
+
+function resolveConfiguredBotFromAuthor(author, member, botsByDiscordId, botsByKey) {
+  let bot = botsByDiscordId[author.id];
+  // legacy: 매핑 없으면 빵빵 user id로 fallback
+  if (!bot && author.id === BB_USER_ID) bot = botsByKey[DEFAULT_BOT_KEY] || null;
+  // discordUserId가 config에 비어있는 경우: 봇 username/displayName으로 fuzzy 매칭
+  if (!bot) {
+    const candidates = [
+      author.username,
+      author.globalName,
+      member?.displayName,
+    ].filter(Boolean).map((s) => String(s).toLowerCase());
+    for (const [key, entry] of Object.entries(botsByKey)) {
+      const name = (entry.displayName || "").toLowerCase();
+      if (!name) continue;
+      if (candidates.some((c) => c.includes(name) || name.includes(c))) {
+        bot = entry;
+        console.log(`[voice-bridge] fuzzy-matched bot ${author.tag} → ${key} (discordUserId not set in config)`);
+        break;
+      }
+    }
+  }
+  return bot;
+}
+
 function faceRegisterFailureMessage(name, result) {
   const code = result && result.code ? result.code : "unknown";
   if (code !== "quality_failed") return `${name} 등록 실패: ${code}`;
@@ -397,6 +481,12 @@ async function handleDirectDiscordFaceMessage(msg) {
   if (imageAttachment) {
     const filePath = await downloadDiscordAttachment(imageAttachment);
     const result = await runFaceCli(["match", filePath, "--threshold", String(FACE_MATCH_THRESHOLD)]);
+    const faceCount = Number((result && result.face_count) || 0);
+    if (!faceCount) {
+      console.log("[voice-bridge] direct discord face match: no face, ignored");
+      return true;
+    }
+    await reactQuietly(msg, hasKnownFace(result) ? "✅" : "❓");
     await msg.reply({ content: formatFaceDiscordSummary(result), allowedMentions: { repliedUser: false } });
     console.log("[voice-bridge] direct discord face match handled");
     return true;
@@ -598,7 +688,7 @@ async function handleFaceRegisterIntent(text, imageUrl, ablyChannel, mentionKey)
 }
 
 function cleanForVoice(text) {
-  const sentences = normalizeSquareBracketsForTTS(text || "")
+  return normalizeSquareBracketsForTTS(text || "")
     // URL은 TTS에서 글자단위로 읽혀서 캐릭터 낭비됨. 호스트만 남기고 "링크"로 축약.
     .replace(/https?:\/\/(?:www\.)?([^\/\s]+)[^\s]*/g, (_, host) => `${host} 링크`)
     .replace(/```[\s\S]*?```/g, "")
@@ -625,13 +715,7 @@ function cleanForVoice(text) {
     .replace(/[\/\\|<>{}"`~^&*+=@#$%]/g, " ")
     .replace(/\s*[:;]\s*/g, ", ")
     .replace(/\s{2,}/g, " ")
-    .split(/(?<=[.!?。!?])\s+/);
-  const MAX_SENTENCES = 5;
-  const truncated = sentences.length > MAX_SENTENCES;
-  return (truncated
-    ? sentences.slice(0, MAX_SENTENCES).join(" ") + " 뒤에 더 있어, 자세한 건 메시지로 봐줘."
-    : sentences.join(" ")
-  ).trim();
+    .trim();
 }
 
 function start() {
@@ -656,8 +740,10 @@ function start() {
       // Safer flow: send the photo to Discord, then reply to that photo message with
       // `이름 등록` or `이름 샘플 추가`. This avoids bots/voice text confusing register intent.
       const location = typeof data === "object" ? data.location : null;
+      console.log(`[voice-bridge] request location: ${summarizeLocationForLog(location)}`);
       const faceContext = imageUrl ? await buildFaceMemoryContext(imageUrl) : "";
       const textWithContext = await buildVoiceRequestText(trimmed, { location, faceContext });
+      console.log(`[voice-bridge] request context: ${summarizeVoiceContextForLog(textWithContext)}`);
       await postViaWebhook(textWithContext, imageUrl, mention);
       console.log("[voice-bridge] forwarded to Discord:", trimmed.slice(0, 80), imageUrl ? "with image" : "");
     } catch (e) {
@@ -676,7 +762,6 @@ function start() {
   let awaitingResponse = false;
   let armTimer = null;
   let selfId = null;
-
   client.once(Events.ClientReady, (c) => {
     selfId = c.user.id;
     console.log(`[voice-bridge] listener ready as ${c.user.tag} (${selfId})`);
@@ -685,7 +770,7 @@ function start() {
   });
 
   client.on(Events.MessageCreate, async (msg) => {
-    if (!BB_CHANNEL_IDS.includes(msg.channelId)) return;
+    if (!isWatchedVoiceChannel(msg)) return;
     if (msg.author.id === selfId) return;
 
     // Discord direct image upload/reply → face memory match/register.
@@ -718,26 +803,7 @@ function start() {
     if (!msg.author.bot) return;
 
     const { byDiscordId, byKey } = readBotsConfig();
-    let bot = byDiscordId[msg.author.id];
-    // legacy: 매핑 없으면 빵빵 user id로 fallback
-    if (!bot && msg.author.id === BB_USER_ID) bot = byKey[DEFAULT_BOT_KEY] || null;
-    // discordUserId가 config에 비어있는 경우: 봇 username/displayName으로 fuzzy 매칭
-    if (!bot) {
-      const candidates = [
-        msg.author.username,
-        msg.author.globalName,
-        msg.member?.displayName,
-      ].filter(Boolean).map((s) => String(s).toLowerCase());
-      for (const [key, entry] of Object.entries(byKey)) {
-        const name = (entry.displayName || "").toLowerCase();
-        if (!name) continue;
-        if (candidates.some((c) => c.includes(name) || name.includes(c))) {
-          bot = entry;
-          console.log(`[voice-bridge] fuzzy-matched bot ${msg.author.tag} → ${key} (discordUserId not set in config)`);
-          break;
-        }
-      }
-    }
+    const bot = resolveConfiguredBotFromAuthor(msg.author, msg.member, byDiscordId, byKey);
     if (!bot) {
       console.log(`[voice-bridge] ignored bot msg from ${msg.author.tag} (${msg.author.id}) — not in bots config`);
       return;
@@ -774,6 +840,10 @@ function start() {
   });
 
   client.login(TOKEN).catch((e) => console.error("[voice-bridge] login error", e));
+}
+
+if (require.main === module) {
+  start();
 }
 
 module.exports = { start, cleanForVoice, normalizeLocation, distanceMeters, resolveLocationLabel, buildVoiceRequestText, prependLocationContext };

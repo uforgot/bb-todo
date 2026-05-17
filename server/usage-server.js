@@ -484,27 +484,43 @@ function getCodexAuthProfile() {
   try {
     const os = require("os");
     const home = os.homedir();
-    const candidates = [
-      path.join(home, ".openclaw/agents/main/agent/auth-profiles.json"),
-      path.join(home, ".codex/auth.json"),
-    ];
+    const authProfilesPath = path.join(home, ".openclaw/agents/main/agent/auth-profiles.json");
+    const codexAuthPath = path.join(home, ".codex/auth.json");
 
-    for (const authPath of candidates) {
-      const parsed = safeReadJson(authPath);
-      if (!parsed) continue;
-
-      const profiles = parsed?.profiles || {};
-      const preferred = parsed?.lastGood?.["openai-codex"];
-      const profile = (preferred && profiles[preferred]) || profiles["openai-codex:default"] || Object.values(profiles).find((entry) => entry?.provider === "openai-codex");
-      if (!profile?.access) continue;
-
-      const tokenPayload = JSON.parse(Buffer.from(profile.access.split(".")[1], "base64url").toString("utf8"));
-      const embeddedAccountId = tokenPayload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+    const parseAccessToken = (access) => {
+      if (!access) return null;
+      const tokenPayload = JSON.parse(Buffer.from(access.split(".")[1], "base64url").toString("utf8"));
       return {
-        access: profile.access,
-        accountId: profile.accountId || embeddedAccountId || undefined,
-        email: profile.email || tokenPayload?.["https://api.openai.com/profile"]?.email || null,
-        source: authPath,
+        accountId: tokenPayload?.["https://api.openai.com/auth"]?.chatgpt_account_id,
+        email: tokenPayload?.["https://api.openai.com/profile"]?.email || null,
+      };
+    };
+
+    const authProfiles = safeReadJson(authProfilesPath);
+    if (authProfiles) {
+      const profiles = authProfiles?.profiles || {};
+      const preferred = authProfiles?.lastGood?.["openai-codex"];
+      const profile = (preferred && profiles[preferred]) || profiles["openai-codex:default"] || Object.values(profiles).find((entry) => entry?.provider === "openai-codex");
+      if (profile?.access) {
+        const token = parseAccessToken(profile.access);
+        return {
+          access: profile.access,
+          accountId: profile.accountId || token?.accountId || undefined,
+          email: profile.email || token?.email || null,
+          source: authProfilesPath,
+        };
+      }
+    }
+
+    const codexAuth = safeReadJson(codexAuthPath);
+    const codexAccess = codexAuth?.tokens?.access_token;
+    if (codexAccess) {
+      const token = parseAccessToken(codexAccess);
+      return {
+        access: codexAccess,
+        accountId: codexAuth?.tokens?.account_id || token?.accountId || undefined,
+        email: token?.email || null,
+        source: codexAuthPath,
       };
     }
 
@@ -740,9 +756,9 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  // Auth check (images + health exempt)
+  // Auth check (images/static bot avatars + health exempt)
   const auth = req.headers.authorization;
-  if (!url.pathname.startsWith("/images/") && url.pathname !== "/health" && auth !== `Bearer ${API_KEY}`) {
+  if (!url.pathname.startsWith("/images/") && !url.pathname.startsWith("/bot/") && url.pathname !== "/health" && auth !== `Bearer ${API_KEY}`) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unauthorized" }));
     return;
@@ -1513,6 +1529,18 @@ const server = http.createServer(async (req, res) => {
       fs.createReadStream(filePath).pipe(res);
       return;
 
+    // GET /bot/* — static bot profile avatars for voice UI
+    } else if (url.pathname.startsWith("/bot/") && req.method === "GET") {
+      const filename = path.basename(url.pathname.replace("/bot/", ""));
+      const filePath = path.join(__dirname, "bot", filename);
+      if (!fs.existsSync(filePath)) { sendError(res, 404, "not found"); return; }
+      const ext = path.extname(filename).toLowerCase();
+      const mimeTypes = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" };
+      const mime = mimeTypes[ext] || "application/octet-stream";
+      res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=86400" });
+      fs.createReadStream(filePath).pipe(res);
+      return;
+
     } else if (url.pathname === "/api/voice-usage" && req.method === "GET") {
       // ElevenLabs 구독/사용량 — character_count, character_limit 기준 퍼센트 반환.
       try {
@@ -1572,6 +1600,10 @@ const server = http.createServer(async (req, res) => {
         };
       };
       const normalizedSettings = normalizeVoiceSettings(settings);
+      const configUrl = (value) => {
+        if (typeof value !== "string" || value.trim() === "") return undefined;
+        return value;
+      };
       const bots = cfg.bots && typeof cfg.bots === "object"
         ? Object.fromEntries(Object.entries(cfg.bots).map(([key, raw]) => {
             const bot = raw && typeof raw === "object" ? raw : {};
@@ -1581,6 +1613,7 @@ const server = http.createServer(async (req, res) => {
               voiceId: typeof bot.voiceId === "string" ? bot.voiceId : undefined,
               gender: typeof bot.gender === "string" ? bot.gender : undefined,
               color: typeof bot.color === "string" ? bot.color : undefined,
+              avatarUrl: configUrl(bot.avatarUrl),
               ttsModel: typeof bot.ttsModel === "string" ? bot.ttsModel : undefined,
               voiceSettings: normalizeVoiceSettings(bot.voiceSettings, normalizedSettings),
             }];
@@ -1594,6 +1627,7 @@ const server = http.createServer(async (req, res) => {
         voiceSettings: normalizedSettings,
         bridgeTimeoutMs: typeof cfg.bridgeTimeoutMs === "number" ? cfg.bridgeTimeoutMs : 90000,
         iosWaitingTimeoutSec: typeof cfg.iosWaitingTimeoutSec === "number" ? cfg.iosWaitingTimeoutSec : 95,
+        ttsMaxSentences: typeof cfg.ttsMaxSentences === "number" ? cfg.ttsMaxSentences : 5,
         emotionEmojiSize: typeof cfg.emotionEmojiSize === "number" ? cfg.emotionEmojiSize : 30,
         emotionEmojiMap: cfg.emotionEmojiMap && typeof cfg.emotionEmojiMap === "object" ? cfg.emotionEmojiMap : undefined,
         bots,
