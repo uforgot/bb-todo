@@ -773,16 +773,7 @@ function start() {
     if (!isWatchedVoiceChannel(msg)) return;
     if (msg.author.id === selfId) return;
 
-    // Discord direct image upload/reply → face memory match/register.
-    try {
-      if (await handleDirectDiscordFaceMessage(msg)) return;
-    } catch (e) {
-      console.error("[voice-bridge] direct discord face handler error:", e.message);
-      try {
-        await msg.reply({ content: `얼굴 처리 실패: ${e.message}`, allowedMentions: { repliedUser: false } });
-      } catch {}
-      return;
-    }
+    // Discord 직접 사진 face 처리 + 무멘션 followup relay는 relay-bridge가 담당.
 
     // User or webhook [voice] → arm (webhook은 author.bot=true지만 msg.webhookId 있음)
     const isUserOrWebhook = !msg.author.bot || msg.webhookId != null;
@@ -839,6 +830,12 @@ function start() {
     }
   });
 
+  try {
+    require("./relay-bridge").attach(client, { isWatchedVoiceChannel });
+  } catch (e) {
+    console.error("[voice-bridge] relay-bridge attach failed:", e.message);
+  }
+
   client.login(TOKEN).catch((e) => console.error("[voice-bridge] login error", e));
 }
 
@@ -846,4 +843,27 @@ if (require.main === module) {
   start();
 }
 
-module.exports = { start, cleanForVoice, normalizeLocation, distanceMeters, resolveLocationLabel, buildVoiceRequestText, prependLocationContext };
+module.exports = {
+  start,
+  cleanForVoice,
+  normalizeLocation,
+  distanceMeters,
+  resolveLocationLabel,
+  buildVoiceRequestText,
+  prependLocationContext,
+  // relay-bridge가 사용하는 helper들
+  isWatchedVoiceChannel,
+  readBotsConfig,
+  resolveConfiguredBotFromAuthor,
+  firstImageAttachment,
+  downloadDiscordAttachment,
+  runFaceCli,
+  listFacePeople,
+  resolvePersonIdByName,
+  extractFaceRegisterIntent,
+  formatFaceDiscordSummary,
+  faceRegisterFailureMessage,
+  hasKnownFace,
+  reactQuietly,
+  FACE_MATCH_THRESHOLD,
+};
