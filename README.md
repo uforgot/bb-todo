@@ -17,6 +17,7 @@
 | 📊 **Usage** | Claude + Kimi AI 사용량 | [docs/usage.md](docs/usage.md) |
 | 🧠 **빵빵** | 빵빵 메모리 변경 이력 | [docs/bbang-pang.md](docs/bbang-pang.md) |
 | ✨ **팡팡** | 팡팡 메모리 변경 이력 | [docs/bbang-pang.md](docs/bbang-pang.md) |
+| 🎙 **Discord 다리** | voice-bridge / relay-bridge 흐름 | [docs/discord-bridges.md](docs/discord-bridges.md) |
 
 ---
 
