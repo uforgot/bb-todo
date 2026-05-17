@@ -97,15 +97,14 @@ async function findPreviousConfiguredBotMessage(msg, byDiscordId, byKey) {
   return null;
 }
 
-async function postFollowupViaWebhook(text, targetBot, replyToMessageId) {
+async function postFollowupViaWebhook(_text, targetBot, replyToMessageId) {
   if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
   if (!targetBot || !targetBot.discordUserId) return false;
 
-  const content = String(text || "").trim();
-  if (!content) return false;
-
+  // 모든 relay는 user 메시지의 댓글(reply)로 박힌다. 봇은 reference 따라가서
+  // 원문 텍스트/이미지를 직접 읽으므로 webhook 본문에는 멘션만 박으면 충분.
   const payload = {
-    content: `<@${targetBot.discordUserId}> ${content}`,
+    content: `<@${targetBot.discordUserId}>`,
     username: "uforgot relay",
     allowed_mentions: { users: [targetBot.discordUserId] },
   };
@@ -149,20 +148,16 @@ async function relayUnmentionedFollowup(msg, extraContext) {
   const { byDiscordId, byKey } = vb.readBotsConfig();
   if (mentionsConfiguredBot(msg, byDiscordId)) return false;
 
-  // relay는 항상 user 메시지에 대한 댓글로 박힘 → 봇이 reference 따라가서 원문(이미지/캡션) 직접 봄.
-  // 따라서 face 요약 같은 부가 컨텍스트는 안 넣고 user 입력만 그대로 forward.
-  const relayContent = text || "봐봐";
-
   // Discord reply(댓글)로 봇 지정한 경우 → 그 봇으로 직행
   const replyTarget = await resolveReplyTargetBot(msg, byDiscordId, byKey);
   if (replyTarget) {
-    return postFollowupViaWebhook(relayContent, replyTarget, msg.id);
+    return postFollowupViaWebhook(null, replyTarget, msg.id);
   }
 
   // 일반 무멘션 → 직전 등록된 봇 찾아서 relay
   const hit = await findPreviousConfiguredBotMessage(msg, byDiscordId, byKey);
   if (!hit) return false;
-  return postFollowupViaWebhook(relayContent, hit.bot, msg.id);
+  return postFollowupViaWebhook(null, hit.bot, msg.id);
 }
 
 function attach(client, { isWatchedVoiceChannel } = {}) {
