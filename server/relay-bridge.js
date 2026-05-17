@@ -11,8 +11,6 @@ const { Events } = require("discord.js");
 
 const vb = require("./voice-bridge");
 
-const VOICE_WEBHOOK_URL = process.env.DISCORD_VOICE_WEBHOOK_URL || "";
-
 function isVoicePrefix(msg) {
   return String(msg.content || "").trim().toLowerCase().startsWith("[voice]");
 }
@@ -97,31 +95,15 @@ async function findPreviousConfiguredBotMessage(msg, byDiscordId, byKey) {
   return null;
 }
 
-async function postFollowupViaWebhook(_text, targetBot, replyToMessageId) {
-  if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
+async function relayViaReply(msg, targetBot) {
   if (!targetBot || !targetBot.discordUserId) return false;
-
-  // 모든 relay는 user 메시지의 댓글(reply)로 박힌다. 봇은 reference 따라가서
-  // 원문 텍스트/이미지를 직접 읽으므로 webhook 본문에는 멘션만 박으면 충분.
-  const payload = {
+  // listener bot이 user 메시지의 댓글(reply)로 멘션을 박는다. 봇은 reply reference를
+  // 따라가서 원문(텍스트/이미지)을 직접 읽으므로 본문에는 멘션만 박는다.
+  await msg.reply({
     content: `<@${targetBot.discordUserId}>`,
-    username: "uforgot relay",
-    allowed_mentions: { users: [targetBot.discordUserId] },
-  };
-  if (replyToMessageId) {
-    payload.message_reference = { message_id: replyToMessageId };
-  }
-
-  const res = await fetch(VOICE_WEBHOOK_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    allowedMentions: { users: [targetBot.discordUserId], repliedUser: false },
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`POST relay webhook ${res.status}: ${body.slice(0, 200)}`);
-  }
-  console.log(`[relay-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId})${replyToMessageId ? " (as reply)" : ""}`);
+  console.log(`[relay-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId}) (as reply)`);
   return true;
 }
 
@@ -151,13 +133,13 @@ async function relayUnmentionedFollowup(msg, extraContext) {
   // Discord reply(댓글)로 봇 지정한 경우 → 그 봇으로 직행
   const replyTarget = await resolveReplyTargetBot(msg, byDiscordId, byKey);
   if (replyTarget) {
-    return postFollowupViaWebhook(null, replyTarget, msg.id);
+    return relayViaReply(msg, replyTarget);
   }
 
   // 일반 무멘션 → 직전 등록된 봇 찾아서 relay
   const hit = await findPreviousConfiguredBotMessage(msg, byDiscordId, byKey);
   if (!hit) return false;
-  return postFollowupViaWebhook(null, hit.bot, msg.id);
+  return relayViaReply(msg, hit.bot);
 }
 
 function attach(client, { isWatchedVoiceChannel } = {}) {
