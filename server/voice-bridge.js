@@ -406,6 +406,16 @@ function firstImageAttachment(msg) {
   return msg.attachments.find(isImageAttachment) || null;
 }
 
+function hasImageAttachment(msg) {
+  return Boolean(firstImageAttachment(msg));
+}
+
+function isVoiceRequestMessage(msg) {
+  const content = String(msg.content || "").trim().toLowerCase();
+  if (!content.startsWith("[voice]")) return false;
+  return !msg.author.bot || msg.webhookId != null;
+}
+
 async function downloadDiscordAttachment(att) {
   fs.mkdirSync(DISCORD_IMAGE_DIR, { recursive: true });
   const ext = path.extname(att.name || "") || ".jpg";
@@ -502,6 +512,7 @@ async function resolvePreviousMessage(msg) {
 async function relayUnmentionedFollowup(msg) {
   if (msg.author.bot || msg.webhookId != null) return false;
   if (msg.reference?.messageId) return false;
+  if (hasImageAttachment(msg)) return false;
   if (msg.content.trim().toLowerCase().startsWith("[voice]")) return false;
 
   const { byDiscordId, byKey } = readBotsConfig();
@@ -817,6 +828,83 @@ function cleanForVoice(text) {
     .trim();
 }
 
+function createVoiceCaptureState() {
+  return {
+    awaitingResponse: false,
+    armTimer: null,
+  };
+}
+
+function disarmVoiceCapture(state, reason) {
+  state.awaitingResponse = false;
+  if (state.armTimer) {
+    clearTimeout(state.armTimer);
+    state.armTimer = null;
+  }
+  if (reason) console.log(`[voice-bridge] ${reason}`);
+}
+
+function armVoiceCapture(state) {
+  disarmVoiceCapture(state);
+  state.awaitingResponse = true;
+  state.armTimer = setTimeout(() => {
+    disarmVoiceCapture(state, "timeout — disarmed");
+  }, readTimeoutMs());
+  console.log("[voice-bridge] armed for next bot voice response");
+}
+
+async function handleVoiceRequestCapture(msg, state) {
+  if (!isVoiceRequestMessage(msg)) return false;
+  armVoiceCapture(state);
+  return true;
+}
+
+async function publishVoiceReply(msg, bot, ablyChannel) {
+  const cleaned = cleanForVoice(msg.content);
+  if (!cleaned) {
+    console.log("[voice-bridge] empty after cleaning, skip");
+    return false;
+  }
+
+  const replyPayload = {
+    text: cleaned,
+    author_id: msg.author.id,
+    author_tag: msg.author.tag,
+    message_id: msg.id,
+    ts: Date.now(),
+    speaker: bot.key,
+    speaker_name: bot.displayName,
+    speaker_color: bot.color,
+    voice_id: bot.voiceId,
+  };
+  if (bot.ttsModel) replyPayload.tts_model = bot.ttsModel;
+  if (bot.voiceSettings) replyPayload.voice_settings = bot.voiceSettings;
+
+  await ablyChannel.publish("reply", replyPayload);
+  console.log(`[voice-bridge] published from ${bot.displayName}(${bot.key}):`, cleaned.slice(0, 80));
+  return true;
+}
+
+async function handleVoiceReplyCapture(msg, state, ablyChannel) {
+  if (!state.awaitingResponse) return false;
+  if (!msg.author.bot) return false;
+
+  const { byDiscordId, byKey } = readBotsConfig();
+  const bot = resolveConfiguredBotFromAuthor(msg.author, msg.member, byDiscordId, byKey);
+  if (!bot) {
+    console.log(`[voice-bridge] ignored bot msg from ${msg.author.tag} (${msg.author.id}) — not in bots config`);
+    return true;
+  }
+
+  try {
+    const published = await publishVoiceReply(msg, bot, ablyChannel);
+    if (published) disarmVoiceCapture(state);
+  } catch (e) {
+    console.error("[voice-bridge] ably publish error", e);
+  }
+  return true;
+}
+
 function start() {
   if (!TOKEN || !ABLY_KEY) {
     console.warn("[voice-bridge] DISCORD_VOICE_BOT_TOKEN or ABLY_ROOT_KEY missing — disabled");
@@ -858,8 +946,7 @@ function start() {
     ],
   });
 
-  let awaitingResponse = false;
-  let armTimer = null;
+  const voiceCapture = createVoiceCaptureState();
   let selfId = null;
   client.once(Events.ClientReady, (c) => {
     selfId = c.user.id;
@@ -872,7 +959,7 @@ function start() {
     if (!isWatchedVoiceChannel(msg)) return;
     if (msg.author.id === selfId) return;
 
-    // Discord direct image upload/reply → face memory match/register.
+    // Face memory handles only direct Discord image/register flows.
     try {
       if (await handleDirectDiscordFaceMessage(msg)) return;
     } catch (e) {
@@ -883,68 +970,18 @@ function start() {
       return;
     }
 
+    // Plain text follow-up relay is independent from voice capture state.
     try {
-      if (await relayUnmentionedFollowup(msg)) {
-        awaitingResponse = false;
-        if (armTimer) clearTimeout(armTimer);
-        return;
-      }
+      if (await relayUnmentionedFollowup(msg)) return;
     } catch (e) {
       console.error("[voice-bridge] followup relay error:", e.message);
     }
 
-    // User or webhook [voice] → arm (webhook은 author.bot=true지만 msg.webhookId 있음)
-    const isUserOrWebhook = !msg.author.bot || msg.webhookId != null;
-    if (isUserOrWebhook && msg.content.trim().toLowerCase().startsWith("[voice]")) {
-      awaitingResponse = true;
-      if (armTimer) clearTimeout(armTimer);
-      armTimer = setTimeout(() => {
-        awaitingResponse = false;
-        console.log("[voice-bridge] timeout — disarmed");
-      }, readTimeoutMs());
-      console.log("[voice-bridge] armed for next 빵빵 response");
-
-      return;
-    }
-
-    // 봇 response → publish & disarm. 멀티봇: voice-config.json의 bots 매핑에 등록된 봇만 허용.
-    if (!awaitingResponse) return;
-    if (!msg.author.bot) return;
-
-    const { byDiscordId, byKey } = readBotsConfig();
-    const bot = resolveConfiguredBotFromAuthor(msg.author, msg.member, byDiscordId, byKey);
-    if (!bot) {
-      console.log(`[voice-bridge] ignored bot msg from ${msg.author.tag} (${msg.author.id}) — not in bots config`);
-      return;
-    }
-
-    const cleaned = cleanForVoice(msg.content);
-    if (!cleaned) {
-      console.log("[voice-bridge] empty after cleaning, skip");
-      return;
-    }
-
-    awaitingResponse = false;
-    if (armTimer) clearTimeout(armTimer);
-
     try {
-      const replyPayload = {
-        text: cleaned,
-        author_id: msg.author.id,
-        author_tag: msg.author.tag,
-        message_id: msg.id,
-        ts: Date.now(),
-        speaker: bot.key,
-        speaker_name: bot.displayName,
-        speaker_color: bot.color,
-        voice_id: bot.voiceId,
-      };
-      if (bot.ttsModel) replyPayload.tts_model = bot.ttsModel;
-      if (bot.voiceSettings) replyPayload.voice_settings = bot.voiceSettings;
-      await ablyChannel.publish("reply", replyPayload);
-      console.log(`[voice-bridge] published from ${bot.displayName}(${bot.key}):`, cleaned.slice(0, 80));
+      if (await handleVoiceRequestCapture(msg, voiceCapture)) return;
+      await handleVoiceReplyCapture(msg, voiceCapture, ablyChannel);
     } catch (e) {
-      console.error("[voice-bridge] ably publish error", e);
+      console.error("[voice-bridge] voice capture error:", e.message);
     }
   });
 
