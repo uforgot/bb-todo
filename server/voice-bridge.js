@@ -25,13 +25,6 @@ const FACE_CLI_PATH = process.env.FACE_CLI_PATH || path.join(process.env.HOME ||
 const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD || 0.4);
 const DISCORD_IMAGE_DIR = path.join(__dirname, "images", "discord-face");
 const DEFAULT_TIMEOUT_MS = 90_000;
-const OPENCLAW_CLI = process.env.OPENCLAW_CLI || path.join(process.env.HOME || "", "Library/pnpm/openclaw");
-const OPENCLAW_AGENT_IDS = {
-  bbangbbang: "main",
-  pangpang: "pang",
-  boongboong: "boong",
-  obbang: "obbang",
-};
 
 const IMAGE_MIME_TYPES = {
   ".jpg": "image/jpeg",
@@ -65,7 +58,6 @@ function readBotsConfig() {
       key,
       displayName: raw.displayName || key,
       discordUserId: raw.discordUserId || "",
-      openclawAgentId: raw.openclawAgentId || OPENCLAW_AGENT_IDS[key] || key,
       voiceId: raw.voiceId || defaultVoiceId,
       gender: raw.gender || "",
       color: raw.color || "",
@@ -328,37 +320,6 @@ async function postFollowupViaWebhook(text, targetBot) {
   return true;
 }
 
-async function relayFollowupViaOpenClaw(text, targetBot, channelId) {
-  if (!targetBot || !targetBot.openclawAgentId) return false;
-
-  const content = String(text || "").trim();
-  if (!content) return false;
-
-  const agentId = targetBot.openclawAgentId;
-  const sessionId = `agent:${agentId}:discord:channel:${channelId}`;
-  const args = [
-    "agent",
-    "--agent", agentId,
-    "--session-id", sessionId,
-    "--message", content,
-    "--deliver",
-    "--reply-channel", "discord",
-    "--reply-account", agentId,
-    "--reply-to", `channel:${channelId}`,
-    "--timeout", "600",
-  ];
-
-  const { stderr } = await execFileAsync(OPENCLAW_CLI, args, {
-    timeout: 10 * 60 * 1000,
-    maxBuffer: 1024 * 1024,
-  });
-  if (stderr && stderr.trim()) {
-    console.warn(`[voice-bridge] openclaw relay stderr: ${stderr.trim().slice(0, 500)}`);
-  }
-  console.log(`[voice-bridge] relayed followup via openclaw → ${targetBot.displayName}(${agentId})`);
-  return true;
-}
-
 function resolveLocalImageAttachment(imageUrl) {
   if (!imageUrl || typeof imageUrl !== "string") return null;
 
@@ -513,12 +474,7 @@ async function relayUnmentionedFollowup(msg) {
   const targetBot = resolveConfiguredBotFromAuthor(previous.author, previous.member, byDiscordId, byKey);
   if (!targetBot) return false;
 
-  try {
-    return await relayFollowupViaOpenClaw(msg.content, targetBot, msg.channelId);
-  } catch (e) {
-    console.error("[voice-bridge] openclaw followup relay error:", e.message);
-    return postFollowupViaWebhook(msg.content, targetBot);
-  }
+  return postFollowupViaWebhook(msg.content, targetBot);
 }
 
 function faceRegisterFailureMessage(name, result) {
