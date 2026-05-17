@@ -312,10 +312,11 @@ async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
   const hasPhoto = Boolean(faceContext);
 
   const voiceBullets = [
-    "* speak in casual conversational tone",
-    "* because this is a voice response, avoid long or overly structured explanations; answer like a short natural conversation",
+    "Voice reply. Answer like a short natural conversation.",
+    "Keep it to one paragraph. Do not use markdown, bullet points, code blocks, decorative punctuation, emojis, or line breaks.",
+    "Use English words when natural. If filenames, commands, or URLs would sound awkward, explain them briefly instead.",
+    "Use location, time, and photo context only when it helps the conversation. Do not describe metadata directly.",
   ];
-  if (hasLocation) voiceBullets.push("* reference Loc only when natural, don't state it directly");
 
   const timeLabel = buildTimeLabel();
   const holidayLabel = buildHolidayLabel();
@@ -685,6 +686,17 @@ function facePositionShort(idx, total) {
   return `#${idx + 1}`;
 }
 
+function formatPersonForVoiceContext(person, confidenceShort) {
+  const name = typeof person.name === "string" ? person.name : "";
+  const nickname = typeof person.nickname === "string" ? person.nickname.trim() : "";
+  const category = typeof person.category === "string" ? person.category.trim() : "";
+  const tone = typeof person.tone === "string" ? person.tone.trim() : "";
+  const relation = nickname || category;
+  if (!relation && !tone) return `${name}(${confidenceShort})`;
+  if (relation && tone) return `${name} (${relation}, ${tone})`;
+  return `${name} (${relation || tone})`;
+}
+
 function formatFaceMemoryContext(matchResult) {
   if (!matchResult || !matchResult.ok) return "";
   const count = Number(matchResult.face_count || 0);
@@ -703,7 +715,7 @@ function formatFaceMemoryContext(matchResult) {
     if (!best || typeof best.score !== "number" || best.score < FACE_MATCH_THRESHOLD) {
       return `${prefix}unknown`;
     }
-    return `${prefix}${best.name}(${faceConfidenceShort(best.score)})`;
+    return `${prefix}${formatPersonForVoiceContext(best, faceConfidenceShort(best.score))}`;
   });
   return parts.join(", ");
 }
