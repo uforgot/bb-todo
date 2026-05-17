@@ -294,6 +294,32 @@ async function postViaWebhook(text, imageUrl, mentionKey) {
   }
 }
 
+async function postFollowupViaWebhook(text, targetBot) {
+  if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
+  if (!targetBot || !targetBot.discordUserId) return false;
+
+  const content = String(text || "").trim();
+  if (!content) return false;
+
+  const payload = {
+    content: `<@${targetBot.discordUserId}> ${content}`,
+    username: "uforgot relay",
+    allowed_mentions: { users: [targetBot.discordUserId] },
+  };
+
+  const res = await fetch(VOICE_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`POST relay webhook ${res.status}: ${body.slice(0, 200)}`);
+  }
+  console.log(`[voice-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId})`);
+  return true;
+}
+
 function resolveLocalImageAttachment(imageUrl) {
   if (!imageUrl || typeof imageUrl !== "string") return null;
 
@@ -420,6 +446,35 @@ function resolveConfiguredBotFromAuthor(author, member, botsByDiscordId, botsByK
     }
   }
   return bot;
+}
+
+function mentionsConfiguredBot(msg, botsByDiscordId) {
+  for (const userId of Object.keys(botsByDiscordId)) {
+    if (msg.mentions.users.has(userId)) return true;
+  }
+  return false;
+}
+
+async function resolvePreviousMessage(msg) {
+  const messages = await msg.channel.messages.fetch({ limit: 1, before: msg.id });
+  return messages.first() || null;
+}
+
+async function relayUnmentionedFollowup(msg) {
+  if (msg.author.bot || msg.webhookId != null) return false;
+  if (msg.reference?.messageId) return false;
+  if (msg.content.trim().toLowerCase().startsWith("[voice]")) return false;
+
+  const { byDiscordId, byKey } = readBotsConfig();
+  if (mentionsConfiguredBot(msg, byDiscordId)) return false;
+
+  const previous = await resolvePreviousMessage(msg);
+  if (!previous || !previous.author?.bot) return false;
+
+  const targetBot = resolveConfiguredBotFromAuthor(previous.author, previous.member, byDiscordId, byKey);
+  if (!targetBot) return false;
+
+  return postFollowupViaWebhook(msg.content, targetBot);
 }
 
 function faceRegisterFailureMessage(name, result) {
@@ -782,6 +837,16 @@ function start() {
         await msg.reply({ content: `얼굴 처리 실패: ${e.message}`, allowedMentions: { repliedUser: false } });
       } catch {}
       return;
+    }
+
+    try {
+      if (await relayUnmentionedFollowup(msg)) {
+        awaitingResponse = false;
+        if (armTimer) clearTimeout(armTimer);
+        return;
+      }
+    } catch (e) {
+      console.error("[voice-bridge] followup relay error:", e.message);
     }
 
     // User or webhook [voice] → arm (webhook은 author.bot=true지만 msg.webhookId 있음)
