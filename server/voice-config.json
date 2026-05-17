@@ -96,7 +96,7 @@
   "iosWaitingTimeoutSec": 245,
 
   // 앱에서 ElevenLabs TTS로 보낼 최대 문장 수. 채팅에는 서버가 보낸 전체 텍스트를 그대로 표시.
-  "ttsMaxSentences": 5,
+  "ttsMaxSentences": 8,
 
   // 무음 자동 종료 — 녹음 중 averagePower가 임계치 미만으로 holdMs 동안 지속되면 자동 stopAndSend.
   "silenceThresholdDb": -40,
