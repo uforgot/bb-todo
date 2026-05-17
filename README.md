@@ -17,6 +17,7 @@
 | 📊 **Usage** | Claude + Kimi AI 사용량 | [docs/usage.md](docs/usage.md) |
 | 🧠 **빵빵** | 빵빵 메모리 변경 이력 | [docs/bbang-pang.md](docs/bbang-pang.md) |
 | ✨ **팡팡** | 팡팡 메모리 변경 이력 | [docs/bbang-pang.md](docs/bbang-pang.md) |
+| 🎙 **Discord 다리** | voice-bridge / relay-bridge 흐름 | [docs/discord-bridges.md](docs/discord-bridges.md) |
 
 ---
 
@@ -60,8 +61,13 @@ Tailscale Funnel (https://ai.tail6603fc.ts.net)
     ↓ proxy
 로컬 Usage API 서버 (localhost:3100)
     ├── Claude → macOS plist (Claude Usage Tracker 앱)
-    └── Kimi → Moonshot API (/v1/users/me/balance)
+    ├── Kimi → Moonshot API (/v1/users/me/balance)
+    ├── voice-bridge → bb-app ↔ Ably ↔ Discord (bb-private)
+    └── relay-bridge → Discord 무멘션 followup 자동 mention relay
 ```
+
+> 같은 usage-server 프로세스 안에서 Usage API와 Discord 다리들이 함께 돈다.
+> Discord 흐름 상세는 [docs/discord-bridges.md](docs/discord-bridges.md).
 
 ### 데이터 수집
 
@@ -95,16 +101,21 @@ USAGE_API_KEY=<Bearer token>
 
 ```
 bb-todo/
-├── server/                       # 로컬 Usage API 서버
-│   ├── usage-server.js           # Node.js HTTP 서버 (포트 3100)
+├── server/                       # 로컬 Usage API 서버 + Discord 다리
+│   ├── usage-server.js           # Node.js HTTP 서버 (포트 3100) + 브릿지 기동
+│   ├── voice-bridge.js           # bb-app ↔ Ably ↔ Discord voice 흐름
+│   ├── relay-bridge.js           # Discord 무멘션 followup → 직전 봇 멘션 relay
+│   ├── voice-config.json         # 등록된 봇(빵빵/팡팡/붕붕…) 메타
 │   ├── start.sh                  # 환경변수 로드 + 실행
-│   └── .env                      # USAGE_API_KEY, USAGE_PORT
+│   ├── README.md                 # server 폴더 개요
+│   └── .env                      # USAGE_API_KEY, USAGE_PORT, DISCORD_VOICE_*, ABLY_ROOT_KEY
 ├── docs/                         # 메뉴별 문서
 │   ├── todo.md
 │   ├── archive.md
 │   ├── cron.md
 │   ├── usage.md
-│   └── bbang-pang.md
+│   ├── bbang-pang.md
+│   └── discord-bridges.md        # voice-bridge / relay-bridge 상세 흐름
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx              # Todo
