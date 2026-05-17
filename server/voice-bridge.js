@@ -78,6 +78,20 @@ function readBotsConfig() {
   return { byKey, byDiscordId, defaultVoiceId };
 }
 
+function resolveOpenClawSessionId(agentId, channelId) {
+  const sessionKey = `agent:${agentId}:discord:channel:${channelId}`;
+  const sessionsPath = path.join(process.env.HOME || "", ".openclaw", "agents", agentId, "sessions", "sessions.json");
+  try {
+    const sessions = JSON.parse(fs.readFileSync(sessionsPath, "utf8"));
+    const entry = sessions && sessions[sessionKey];
+    const sessionId = entry && typeof entry.sessionId === "string" ? entry.sessionId : "";
+    return sessionId || "";
+  } catch (e) {
+    console.warn(`[voice-bridge] failed to resolve openclaw session for ${sessionKey}: ${e.message}`);
+    return "";
+  }
+}
+
 function resolveBotForMention(mentionKey, botsByKey) {
   if (mentionKey && botsByKey[mentionKey]) return botsByKey[mentionKey];
   return botsByKey[DEFAULT_BOT_KEY] || null;
@@ -335,7 +349,8 @@ async function relayFollowupViaOpenClaw(text, targetBot, channelId) {
   if (!content) return false;
 
   const agentId = targetBot.openclawAgentId;
-  const sessionId = `agent:${agentId}:discord:channel:${channelId}`;
+  const sessionId = resolveOpenClawSessionId(agentId, channelId);
+  if (!sessionId) throw new Error(`OpenClaw session not found for agent:${agentId}:discord:channel:${channelId}`);
   const args = [
     "agent",
     "--agent", agentId,
@@ -549,6 +564,7 @@ function faceRegisterFailureMessage(name, result) {
 
 async function handleDirectDiscordFaceMessage(msg) {
   if (msg.author.bot) return false;
+  if (isVoiceRequestMessage(msg)) return false;
 
   const text = msg.content || "";
   const registerIntent = extractFaceRegisterIntent(text);
