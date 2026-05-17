@@ -70,12 +70,7 @@ export default function Home() {
     );
   }
 
-  // Sort: priority 1 → 2 → rest
-  const sortedProjects = [...projects].sort((a, b) => {
-    const pa = a.priority === 1 ? 0 : a.priority === 2 ? 1 : 2;
-    const pb = b.priority === 1 ? 0 : b.priority === 2 ? 1 : 2;
-    return pa - pb;
-  });
+  const sortedProjects = projects;
 
   const todayItems = collectTodayItems(sortedProjects);
   const todayIds = new Set(todayItems.map((t) => t.item.id));

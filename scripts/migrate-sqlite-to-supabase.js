@@ -39,7 +39,7 @@ async function upsert(table, rows, onConflict) {
 
 async function main() {
   const projects = db.prepare(`
-    select id, name, emoji, priority, sort_order, coalesce(status, 'active') as status,
+    select id, name, emoji, sort_order, coalesce(status, 'active') as status,
            color, discord_channel_id, discord_thread_id, created_at
     from projects
   `).all();

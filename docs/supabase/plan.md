@@ -11,7 +11,6 @@
 - id: integer primary key
 - name: unique project name
 - emoji: optional emoji
-- priority: numeric priority
 - sort_order: manual ordering
 - status: active/inactive-ish currently only `active` is used in reads
 - color: optional project color

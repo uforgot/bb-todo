@@ -61,7 +61,6 @@ function parseArchive(content) {
       currentProject = {
         name,
         emoji,
-        priority: 99,
         sort_order: projectOrder++,
         categories: [],
         items: [],
@@ -139,7 +138,6 @@ db.exec(`
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     emoji TEXT,
-    priority INTEGER NOT NULL DEFAULT 99,
     sort_order INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
@@ -165,7 +163,7 @@ db.exec(`
 `);
 
 const insertProject = db.prepare(
-  `INSERT INTO projects (name, emoji, priority, sort_order) VALUES (?, ?, ?, ?)`
+  `INSERT INTO projects (name, emoji, sort_order) VALUES (?, ?, ?)`
 );
 const insertCategory = db.prepare(
   `INSERT INTO categories (project_id, name, sort_order) VALUES (?, ?, ?)`
@@ -180,7 +178,7 @@ let totalItems = 0;
 
 const migrate = db.transaction(() => {
   for (const proj of projects) {
-    const projResult = insertProject.run(proj.name, proj.emoji, proj.priority, proj.sort_order);
+    const projResult = insertProject.run(proj.name, proj.emoji, proj.sort_order);
     const projectId = projResult.lastInsertRowid;
     totalProjects++;
 

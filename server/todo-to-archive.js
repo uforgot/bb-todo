@@ -198,8 +198,8 @@ const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 
 const insertProject = db.prepare(`
-  INSERT OR IGNORE INTO projects (name, emoji, priority, sort_order)
-  VALUES (?, ?, 99, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM projects))
+  INSERT OR IGNORE INTO projects (name, emoji, sort_order)
+  VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM projects))
 `);
 
 const getProject = db.prepare("SELECT id FROM projects WHERE name = ?");

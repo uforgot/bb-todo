@@ -91,7 +91,7 @@ GITHUB_FILE_PATH=TODO.md
 projects → categories → items (3-depth)
 ```
 
-- `projects` (id, name, emoji, priority, sort_order, created_at)
+- `projects` (id, name, emoji, sort_order, created_at)
 - `categories` (id, project_id FK, name, sort_order, created_at)
 - `items` (id, project_id FK, category_id FK nullable, status, title, content, sort_order, updated_at, created_at)
 - `status`: todo | in_progress | done | archived

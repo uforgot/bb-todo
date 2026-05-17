@@ -21,9 +21,13 @@ function mentionsConfiguredBot(msg, botsByDiscordId) {
   return false;
 }
 
-async function findPreviousConfiguredBotMessage(msg, byDiscordId, byKey) {
+function mentionsAnyUser(msg) {
+  return msg.mentions.users.size > 0;
+}
+
+async function findImmediatePreviousConfiguredBotMessage(msg, byDiscordId, byKey) {
   try {
-    const fetched = await msg.channel.messages.fetch({ limit: 15, before: msg.id });
+    const fetched = await msg.channel.messages.fetch({ limit: 1, before: msg.id });
     for (const prev of fetched.values()) {
       if (!prev.author?.bot) continue;
       const bot = vb.resolveConfiguredBotFromAuthor(prev.author, prev.member, byDiscordId, byKey);
@@ -84,6 +88,7 @@ async function relayUnmentionedFollowup(msg) {
 
   const { byDiscordId, byKey } = vb.readBotsConfig();
   if (mentionsConfiguredBot(msg, byDiscordId)) return false;
+  if (mentionsAnyUser(msg)) return false;
 
   // Discord reply(댓글)로 봇 지정한 경우 → 그 봇으로 직행
   const replyTarget = await resolveReplyTargetBot(msg, byDiscordId, byKey);
@@ -91,8 +96,9 @@ async function relayUnmentionedFollowup(msg) {
     return relayViaReply(msg, replyTarget);
   }
 
-  // 일반 무멘션 → 직전 등록된 봇 찾아서 relay
-  const hit = await findPreviousConfiguredBotMessage(msg, byDiscordId, byKey);
+  // 일반 무멘션 → 바로 직전 메시지가 등록된 봇일 때만 relay.
+  // 전체 채널 relay에서 사람들 대화를 건너뛰고 더 오래된 봇을 잡으면 오발화가 난다.
+  const hit = await findImmediatePreviousConfiguredBotMessage(msg, byDiscordId, byKey);
   if (!hit) return false;
   return relayViaReply(msg, hit.bot);
 }

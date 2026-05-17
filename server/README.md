@@ -27,3 +27,25 @@ client를 띄우고, 그 안에서 cron poller / voice-bridge / relay-bridge가 
 launchctl kickstart -k gui/$(id -u)/com.bbtodo.usage-server
 tail -f /tmp/usage-server.log
 ```
+
+## relay-bridge 무한루프 긴급 중지
+
+`relay-bridge`는 단독 프로세스가 아니라 `usage-server.js` 안에서 `voice-bridge`에
+attach되어 돈다. 그래서 relay만 `pm2 stop relay-bridge`처럼 끌 수 없다.
+
+릴레이가 무한루프를 만들면 `usage-server` launchd 서비스를 내려서 즉시 차단한다.
+
+```sh
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.bbtodo.usage-server.plist
+```
+
+다시 켤 때:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bbtodo.usage-server.plist
+tail -f /tmp/usage-server.log
+```
+
+주의: 이 명령은 `relay-bridge`뿐 아니라 Usage API, cron poller, `voice-bridge`도
+같이 내린다. PID만 `kill`하면 `KeepAlive` 때문에 다시 살아날 수 있으니 긴급 차단
+때는 launchd 서비스를 내린다.

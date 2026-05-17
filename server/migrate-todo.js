@@ -5,7 +5,6 @@
  * - 기존 DB 프로젝트/카테고리/아이템은 건드리지 않음
  * - TODO.md의 프로젝트를 DB에 upsert (이름 기준 매칭)
  * - 새 아이템은 status='todo', 기존 [x]는 status='done'
- * - ★ 마크는 priority=1
  * 
  * Usage: node migrate-todo.js [--dry-run]
  */
@@ -31,12 +30,9 @@ function parseTodoMd(content) {
     const projectMatch = line.match(/^## (.+)$/);
     if (projectMatch) {
       const raw = projectMatch[1].trim();
-      // Parse priority (!1, !2)
-      let priority = 99;
       let name = raw;
       const prioMatch = raw.match(/^!(\d)\s+(.+)$/);
       if (prioMatch) {
-        priority = parseInt(prioMatch[1]);
         name = prioMatch[2];
       }
       // Parse emoji (first char if emoji)
@@ -47,7 +43,7 @@ function parseTodoMd(content) {
         name = emojiMatch[2].trim();
       }
 
-      currentProject = { name, emoji, priority, categories: [], items: [] };
+      currentProject = { name, emoji, categories: [], items: [] };
       currentCategory = null;
       projects.push(currentProject);
       continue;
@@ -74,18 +70,13 @@ function parseTodoMd(content) {
     if (itemMatch) {
       const done = itemMatch[1] === 'x';
       let title = itemMatch[2].trim();
-      let itemPriority = 0;
-
-      // ★ prefix = high priority
       if (title.startsWith('★ ')) {
-        itemPriority = 1;
         title = title.replace('★ ', '');
       }
 
       const item = {
         title,
         status: done ? 'done' : 'todo',
-        priority: itemPriority,
         content: null
       };
 
@@ -123,10 +114,10 @@ function migrate(projects) {
   existingProjects.forEach(p => { nameToId[p.name] = p.id; });
 
   const insertProject = db.prepare(
-    "INSERT INTO projects (name, emoji, priority, sort_order, status) VALUES (?, ?, ?, ?, 'active')"
+    "INSERT INTO projects (name, emoji, sort_order, status) VALUES (?, ?, ?, 'active')"
   );
   const updateProject = db.prepare(
-    "UPDATE projects SET emoji=COALESCE(?, emoji), priority=?, status='active' WHERE id=?"
+    "UPDATE projects SET emoji=COALESCE(?, emoji), status='active' WHERE id=?"
   );
   const insertCategory = db.prepare(
     "INSERT INTO categories (project_id, name, sort_order) VALUES (?, ?, ?)"
@@ -149,10 +140,10 @@ function migrate(projects) {
 
       if (nameToId[proj.name]) {
         projectId = nameToId[proj.name];
-        updateProject.run(proj.emoji, proj.priority, projectId);
+        updateProject.run(proj.emoji, projectId);
         console.log(`  ♻️  Project "${proj.name}" (id=${projectId}) — updated`);
       } else {
-        const result = insertProject.run(proj.name, proj.emoji, proj.priority, sortOrder++);
+        const result = insertProject.run(proj.name, proj.emoji, sortOrder++);
         projectId = result.lastInsertRowid;
         nameToId[proj.name] = projectId;
         stats.projects++;

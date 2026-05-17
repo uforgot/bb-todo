@@ -10,10 +10,24 @@ const execFileAsync = promisify(execFile);
 
 const TOKEN = process.env.DISCORD_VOICE_BOT_TOKEN;
 const ABLY_KEY = process.env.ABLY_ROOT_KEY;
-const BB_CHANNEL_IDS = (process.env.BB_VOICE_CHANNEL_IDS || "1472162937648189615")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const DEFAULT_VOICE_CHANNEL_IDS = "1472162937648189615";
+
+function parseChannelIds(value) {
+  return String(value || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function isTruthyEnv(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+const BB_CHANNEL_IDS = parseChannelIds(process.env.BB_VOICE_CHANNEL_IDS || DEFAULT_VOICE_CHANNEL_IDS);
+const RELAY_ALL_VISIBLE_CHANNELS = isTruthyEnv(process.env.RELAY_ALL_VISIBLE_CHANNELS);
+const RELAY_CHANNEL_IDS = parseChannelIds(
+  process.env.RELAY_CHANNEL_IDS || process.env.BB_VOICE_CHANNEL_IDS || DEFAULT_VOICE_CHANNEL_IDS
+);
 const BB_USER_ID = process.env.BBANGBBANG_USER_ID || "1471495923400970377"; // 빵빵 (legacy default mention)
 const DEFAULT_BOT_KEY = "bbangbbang";
 const ABLY_CHANNEL = process.env.ABLY_VOICE_CHANNEL || "bb-voice";
@@ -75,10 +89,19 @@ function resolveBotForMention(mentionKey, botsByKey) {
   return botsByKey[DEFAULT_BOT_KEY] || null;
 }
 
-function isWatchedVoiceChannel(msg) {
-  if (BB_CHANNEL_IDS.includes(msg.channelId)) return true;
+function isWatchedChannel(msg, channelIds) {
+  if (channelIds.includes(msg.channelId)) return true;
   const parentId = msg.channel && typeof msg.channel.parentId === "string" ? msg.channel.parentId : null;
-  return Boolean(parentId && BB_CHANNEL_IDS.includes(parentId));
+  return Boolean(parentId && channelIds.includes(parentId));
+}
+
+function isWatchedVoiceChannel(msg) {
+  return isWatchedChannel(msg, BB_CHANNEL_IDS);
+}
+
+function isWatchedRelayChannel(msg) {
+  if (RELAY_ALL_VISIBLE_CHANNELS) return true;
+  return isWatchedChannel(msg, RELAY_CHANNEL_IDS);
 }
 
 function readTimeoutMs() {
@@ -813,7 +836,8 @@ function start() {
   client.once(Events.ClientReady, (c) => {
     selfId = c.user.id;
     console.log(`[voice-bridge] listener ready as ${c.user.tag} (${selfId})`);
-    console.log(`[voice-bridge] watching channels [${BB_CHANNEL_IDS.join(",")}], ably channel "${ABLY_CHANNEL}"`);
+    console.log(`[voice-bridge] watching voice channels [${BB_CHANNEL_IDS.join(",")}], ably channel "${ABLY_CHANNEL}"`);
+    console.log(`[voice-bridge] watching relay channels ${RELAY_ALL_VISIBLE_CHANNELS ? "[all visible]" : `[${RELAY_CHANNEL_IDS.join(",")}]`}`);
     console.log(`[voice-bridge] BB user id = ${BB_USER_ID || "(any bot)"}`);
   });
 
@@ -879,7 +903,7 @@ function start() {
   });
 
   try {
-    require("./relay-bridge").attach(client, { isWatchedVoiceChannel });
+    require("./relay-bridge").attach(client, { isWatchedVoiceChannel: isWatchedRelayChannel });
   } catch (e) {
     console.error("[voice-bridge] relay-bridge attach failed:", e.message);
   }
@@ -901,6 +925,7 @@ module.exports = {
   prependLocationContext,
   // relay-bridge가 사용하는 helper들
   isWatchedVoiceChannel,
+  isWatchedRelayChannel,
   readBotsConfig,
   resolveConfiguredBotFromAuthor,
   firstImageAttachment,

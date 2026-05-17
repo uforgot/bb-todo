@@ -66,7 +66,6 @@ db.exec(`
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     emoji TEXT,
-    priority INTEGER NOT NULL DEFAULT 99,
     sort_order INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
@@ -969,8 +968,8 @@ const server = http.createServer(async (req, res) => {
         const projName = emojiMatch ? emojiMatch[2].trim() : project;
 
         const upsertProj = db.prepare(
-          `INSERT INTO projects (name, emoji, priority, sort_order)
-           VALUES (?, ?, 99, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
+          `INSERT INTO projects (name, emoji, sort_order)
+           VALUES (?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
            ON CONFLICT(name) DO UPDATE SET emoji=excluded.emoji
            RETURNING id`
         );
@@ -1005,7 +1004,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/projects — 전체 프로젝트 (활성 아이템만)
     } else if (url.pathname === "/api/projects" && req.method === "GET") {
-      const projects = db.prepare("SELECT * FROM projects WHERE COALESCE(status,'active') = 'active' ORDER BY priority, sort_order, id").all();
+      const projects = db.prepare("SELECT * FROM projects WHERE COALESCE(status,'active') = 'active' ORDER BY sort_order, id").all();
       const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order, id").all();
       const activeItems = db.prepare("SELECT * FROM items WHERE status IN ('todo','in_progress','done','review') ORDER BY sort_order, id").all();
 
@@ -1017,7 +1016,6 @@ const server = http.createServer(async (req, res) => {
           id: p.id,
           emoji: p.emoji,
           name: p.name,
-          priority: p.priority,
           color: p.color || null,
           discord_channel_id: p.discord_channel_id || null,
           discord_thread_id: p.discord_thread_id || null,
@@ -1044,8 +1042,8 @@ const server = http.createServer(async (req, res) => {
       if (!name) { sendError(res, 400, "name required"); return; }
 
       const row = db.prepare(
-        `INSERT INTO projects (name, emoji, priority, sort_order)
-         VALUES (?, ?, 99, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
+        `INSERT INTO projects (name, emoji, sort_order)
+         VALUES (?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
          RETURNING *`
       ).get(name, emoji || '📌');
       broadcastSSE("project-created", { id: row.id });
@@ -1059,7 +1057,7 @@ const server = http.createServer(async (req, res) => {
       const updates = JSON.parse(body);
       const fields = [];
       const values = [];
-      for (const key of ["emoji", "name", "priority", "status", "color", "discord_channel_id", "discord_thread_id"]) {
+      for (const key of ["emoji", "name", "status", "color", "discord_channel_id", "discord_thread_id"]) {
         if (updates[key] !== undefined) { fields.push(`${key}=?`); values.push(updates[key]); }
       }
       if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
@@ -1215,7 +1213,6 @@ const server = http.createServer(async (req, res) => {
           id: p.id,
           name: p.name,
           emoji: p.emoji,
-          priority: p.priority,
           categories: projCats.map(c => ({
             id: c.id,
             name: c.name,

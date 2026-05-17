@@ -20,7 +20,6 @@ export interface ArchiveProject {
   id: number;
   name: string;
   emoji: string | null;
-  priority: number;
   categories: ArchiveCategory[];
   items: ArchiveItem[]; // uncategorized items
 }

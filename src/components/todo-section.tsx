@@ -81,17 +81,11 @@ export function TodoSection({ project, defaultOpen = true, onToggle, onClearDone
 
   const title = project.emoji ? `${project.emoji} ${project.name}` : project.name;
 
-  const priorityBorder = !allDone && project.priority === 1
-    ? "border-l-4 border-l-[#EF4444]"
-    : !allDone && project.priority === 2
-    ? "border-l-4 border-l-[#F97316]"
-    : "";
-
-  const colorBorder = !priorityBorder && project.color
+  const colorBorder = project.color
     ? `border-l-4`
     : "";
 
-  const colorStyle = !priorityBorder && project.color
+  const colorStyle = project.color
     ? { borderLeftColor: project.color }
     : undefined;
 
@@ -107,7 +101,7 @@ export function TodoSection({ project, defaultOpen = true, onToggle, onClearDone
 
   return (
     <Card
-      className={`border shadow-none rounded-lg mb-1 ${allDone ? "border-border/30 opacity-60" : "border-border/50"} ${priorityBorder} ${colorBorder}`}
+      className={`border shadow-none rounded-lg mb-1 ${allDone ? "border-border/30 opacity-60" : "border-border/50"} ${colorBorder}`}
       style={colorStyle}
     >
       <Accordion

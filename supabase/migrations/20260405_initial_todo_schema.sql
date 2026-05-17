@@ -4,7 +4,6 @@ create table if not exists projects (
   id bigint primary key,
   name text not null unique,
   emoji text,
-  priority integer not null default 99,
   sort_order integer not null default 0,
   status text not null default 'active' check (status in ('active', 'archived')),
   color text,
@@ -40,7 +39,7 @@ create table if not exists items (
   updated_at timestamptz not null default now()
 );
 
-create index if not exists idx_projects_status_sort on projects(status, priority, sort_order, id);
+create index if not exists idx_projects_status_sort on projects(status, sort_order, id);
 create index if not exists idx_categories_project_sort on categories(project_id, sort_order, id);
 create index if not exists idx_items_project_status_sort on items(project_id, status, sort_order, id);
 create index if not exists idx_items_category_sort on items(category_id, sort_order, id);

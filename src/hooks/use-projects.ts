@@ -21,7 +21,6 @@ export interface Project {
   id: number;
   emoji: string | null;
   name: string;
-  priority: number;
   color: string | null;
   items: ProjectItem[];
   categories: ProjectCategory[];
