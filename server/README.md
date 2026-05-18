@@ -49,3 +49,31 @@ tail -f /tmp/usage-server.log
 주의: 이 명령은 `relay-bridge`뿐 아니라 Usage API, cron poller, `voice-bridge`도
 같이 내린다. PID만 `kill`하면 `KeepAlive` 때문에 다시 살아날 수 있으니 긴급 차단
 때는 launchd 서비스를 내린다.
+
+## weather 캐시
+
+`voice-bridge`가 `Weather:` 한 줄을 프롬프트에 붙이기 위해 별도 launchd 잡이
+1시간마다 wttr.in에서 서울 시 단위 날씨를 받아 `/tmp/bb-weather.json`에
+저장한다. `voice-bridge`는 매 메시지마다 그 파일만 읽고 네트워크 호출은 안 한다.
+
+| 파일/잡 | 역할 |
+|---|---|
+| `~/.openclaw/workspace/scripts/weather-cache.sh` | wttr.in fetch + JSON 저장 |
+| `~/Library/LaunchAgents/com.bbtodo.weather-cache.plist` | 1시간 주기 launchd |
+| `/tmp/bb-weather.json` | 캐시 (city, temp_c, desc, updated_at) |
+| `/tmp/bb-weather.log` | 실행 로그 |
+
+캐시가 없거나 6시간 넘게 stale이면 `Weather:` 줄은 자동으로 빠진다. 도시 바꾸려면
+`WEATHER_CITY` env로 plist에서 지정.
+
+수동 강제 갱신:
+
+```sh
+launchctl kickstart -k gui/$(id -u)/com.bbtodo.weather-cache
+```
+
+중지:
+
+```sh
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.bbtodo.weather-cache.plist
+```

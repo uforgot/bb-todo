@@ -18,6 +18,7 @@
 | 🧠 **빵빵** | 빵빵 메모리 변경 이력 | [docs/bbang-pang.md](docs/bbang-pang.md) |
 | ✨ **팡팡** | 팡팡 메모리 변경 이력 | [docs/bbang-pang.md](docs/bbang-pang.md) |
 | 🎙 **Discord 다리** | voice-bridge / relay-bridge 흐름 | [docs/discord-bridges.md](docs/discord-bridges.md) |
+| 🌤 **Weather 캐시** | voice-bridge용 시 단위 날씨 캐시 (launchd) | [server/README.md#weather-캐시](server/README.md#weather-캐시) |
 
 ---
 
