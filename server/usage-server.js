@@ -1624,7 +1624,6 @@ const server = http.createServer(async (req, res) => {
         voiceSettings: normalizedSettings,
         bridgeTimeoutMs: typeof cfg.bridgeTimeoutMs === "number" ? cfg.bridgeTimeoutMs : 90000,
         iosWaitingTimeoutSec: typeof cfg.iosWaitingTimeoutSec === "number" ? cfg.iosWaitingTimeoutSec : 95,
-        ttsMaxSentences: typeof cfg.ttsMaxSentences === "number" ? cfg.ttsMaxSentences : 5,
         emotionEmojiSize: typeof cfg.emotionEmojiSize === "number" ? cfg.emotionEmojiSize : 30,
         emotionEmojiMap: cfg.emotionEmojiMap && typeof cfg.emotionEmojiMap === "object" ? cfg.emotionEmojiMap : undefined,
         bots,
