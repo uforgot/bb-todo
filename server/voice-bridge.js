@@ -306,10 +306,36 @@ function summarizeVoiceContextForLog(text) {
   return `${time} | ${loc} | ${photo}`;
 }
 
+const WEATHER_CACHE_PATH = "/tmp/bb-weather.json";
+const WEATHER_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const CITY_LABELS_KO = { Seoul: "서울" };
+
+function readWeatherLabel() {
+  try {
+    const raw = fs.readFileSync(WEATHER_CACHE_PATH, "utf8");
+    const data = JSON.parse(raw);
+    const updatedAt = Number(data && data.updated_at);
+    if (!Number.isFinite(updatedAt)) return null;
+    const ageMs = Date.now() - updatedAt * 1000;
+    if (ageMs < 0 || ageMs > WEATHER_MAX_AGE_MS) return null;
+    const temp = Number(data.temp_c);
+    if (!Number.isFinite(temp)) return null;
+    const desc = String(data.desc || "").trim();
+    const cityRaw = String(data.city || "").trim();
+    const cityLabel = CITY_LABELS_KO[cityRaw] || cityRaw;
+    const tempPart = `${Math.round(temp)}도`;
+    const head = desc ? `${tempPart}, ${desc}` : tempPart;
+    return cityLabel ? `${head} (${cityLabel})` : head;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
   const locationLabel = await resolveLocationLabel(location);
   const hasLocation = Boolean(locationLabel);
   const hasPhoto = Boolean(faceContext);
+  const weatherLabel = readWeatherLabel();
 
   const voiceBullets = [
     "Voice reply. Answer like a short natural conversation.",
@@ -323,6 +349,7 @@ async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
   const dataLines = [];
   dataLines.push(`Time: ${timeLabel}`);
   if (holidayLabel) dataLines.push(`Holiday: ${holidayLabel}`);
+  if (weatherLabel) dataLines.push(`Weather: ${weatherLabel}`);
   if (hasLocation) dataLines.push(`Loc: ${locationLabel}`);
   if (hasPhoto) dataLines.push(`Photo: ${faceContext}`);
   dataLines.push(`User: ${userText}`);
