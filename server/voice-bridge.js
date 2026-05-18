@@ -120,13 +120,26 @@ function pickAddressPart(result, types) {
   return components.find((component) => types.some((type) => component.types?.includes(type)))?.long_name || "";
 }
 
+function shortenKoreanCity(name) {
+  if (!name) return "";
+  return name
+    .replace(/특별시$/, "")
+    .replace(/광역시$/, "")
+    .replace(/특별자치시$/, "")
+    .replace(/특별자치도$/, "")
+    .replace(/도$/, "");
+}
+
 function formatCoarseAddress(results) {
   for (const result of results) {
     const dong = pickAddressPart(result, ["sublocality_level_2", "sublocality_level_3", "neighborhood"]);
     const gu = pickAddressPart(result, ["sublocality_level_1", "administrative_area_level_2"]);
-    if (gu && dong) return `${gu} ${dong}`;
-    if (dong) return dong;
-    if (gu) return gu;
+    const cityRaw = pickAddressPart(result, ["locality", "administrative_area_level_1"]);
+    const city = shortenKoreanCity(cityRaw);
+    const area = gu && dong ? `${gu} ${dong}` : dong || gu || "";
+    if (area && city && area !== city) return `${area}, ${city}`;
+    if (area) return area;
+    if (city) return city;
   }
   return "";
 }
