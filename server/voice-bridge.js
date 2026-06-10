@@ -390,8 +390,44 @@ function voiceWebhookUrl() {
   }
 }
 
-async function postViaWebhook(text, imageUrl, mentionKey) {
-  if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
+function cleanId(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || null;
+}
+
+function normalizeVoiceTarget(data) {
+  if (!data || typeof data !== "object") return { channelId: null, threadId: null };
+  return {
+    channelId: cleanId(data.target_channel_id) || cleanId(data.channel_id),
+    threadId: cleanId(data.target_thread_id) || cleanId(data.thread_id),
+  };
+}
+
+function webhookVoiceTarget() {
+  return VOICE_THREAD_ID ? { channelId: null, threadId: VOICE_THREAD_ID } : null;
+}
+
+function voiceTargetLabel(target) {
+  if (!target) return "default";
+  if (target.threadId) return `thread:${target.threadId}`;
+  if (target.channelId) return `channel:${target.channelId}`;
+  return "default";
+}
+
+function messageVoiceTarget(msg) {
+  const parentId = msg.channel && typeof msg.channel.parentId === "string" ? msg.channel.parentId : null;
+  if (parentId) return { channelId: parentId, threadId: msg.channelId };
+  return { channelId: msg.channelId, threadId: null };
+}
+
+function isCurrentVoiceTarget(msg, target) {
+  if (!target) return false;
+  if (target.threadId) return msg.channelId === target.threadId;
+  if (target.channelId) return msg.channelId === target.channelId;
+  return false;
+}
+
+function buildVoicePost(text, imageUrl, mentionKey) {
   const attachment = resolveLocalImageAttachment(imageUrl);
   const imageLine = imageUrl && !attachment ? `\n${imageUrl}` : "";
 
@@ -400,15 +436,26 @@ async function postViaWebhook(text, imageUrl, mentionKey) {
   const targetUserId = (target && target.discordUserId) || BB_USER_ID;
   const targetName = (target && target.displayName) || "빵빵";
 
-  const payload = {
+  return {
     content: `[voice] <@${targetUserId}>\n${text}${imageLine}`,
-    username: "uforgot voice",
-    allowed_mentions: { users: [targetUserId] },
+    attachment,
+    targetName,
+    targetUserId,
   };
-  console.log(`[voice-bridge] mention → ${targetName}(${targetUserId})`);
+}
 
-  const fetchOptions = attachment
-    ? buildMultipartWebhookRequest(payload, attachment)
+async function postViaWebhook(text, imageUrl, mentionKey) {
+  if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
+  const post = buildVoicePost(text, imageUrl, mentionKey);
+  const payload = {
+    content: post.content,
+    username: "uforgot voice",
+    allowed_mentions: { users: [post.targetUserId] },
+  };
+  console.log(`[voice-bridge] mention → ${post.targetName}(${post.targetUserId}) via webhook`);
+
+  const fetchOptions = post.attachment
+    ? buildMultipartWebhookRequest(payload, post.attachment)
     : {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -420,6 +467,26 @@ async function postViaWebhook(text, imageUrl, mentionKey) {
     const body = await res.text();
     throw new Error(`POST webhook ${res.status}: ${body.slice(0, 200)}`);
   }
+}
+
+async function postViaDiscordClient(client, text, imageUrl, mentionKey, target) {
+  const channelId = target?.threadId || target?.channelId;
+  if (!channelId) return false;
+  if (!client?.isReady?.()) throw new Error("Discord client not ready for dynamic voice target");
+
+  const post = buildVoicePost(text, imageUrl, mentionKey);
+  const channel = await client.channels.fetch(channelId);
+  if (!channel || typeof channel.send !== "function") {
+    throw new Error(`Discord target cannot send: ${channelId}`);
+  }
+
+  await channel.send({
+    content: post.content,
+    allowedMentions: { users: [post.targetUserId], repliedUser: false },
+    files: post.attachment ? [{ attachment: post.attachment.filePath, name: post.attachment.filename }] : undefined,
+  });
+  console.log(`[voice-bridge] mention → ${post.targetName}(${post.targetUserId}) via ${voiceTargetLabel(target)}`);
+  return true;
 }
 
 function resolveLocalImageAttachment(imageUrl) {
@@ -866,32 +933,7 @@ function start() {
   const ably = new Ably.Realtime(ABLY_KEY);
   const ablyChannel = ably.channels.get(ABLY_CHANNEL);
   let currentRequestId = null;
-
-  // iOS → Ably "request" 이벤트 받으면 hint 박아 Discord webhook으로 post
-  ablyChannel.subscribe("request", async (msg) => {
-    const data = msg.data || {};
-    const text = typeof data === "string" ? data : data.text;
-    const imageUrl = typeof data === "object" && typeof data.image_url === "string" ? data.image_url : null;
-    const mention = typeof data === "object" && typeof data.mention === "string" ? data.mention : null;
-    if (!text || typeof text !== "string") return;
-    currentRequestId = typeof data === "object" && typeof data.request_id === "string" ? data.request_id : null;
-    try {
-      const trimmed = text.trim();
-      // Registration is intentionally NOT handled inside voice requests.
-      // Safer flow: send the photo to Discord, then reply to that photo message with
-      // `이름 등록` or `이름 샘플 추가`. This avoids bots/voice text confusing register intent.
-      const location = typeof data === "object" ? data.location : null;
-      console.log(`[voice-bridge] request location: ${summarizeLocationForLog(location)}`);
-      const faceContext = imageUrl ? await buildFaceMemoryContext(imageUrl) : "";
-      const textWithContext = await buildVoiceRequestText(trimmed, { location, faceContext });
-      console.log(`[voice-bridge] request context: ${summarizeVoiceContextForLog(textWithContext)}`);
-      await postViaWebhook(textWithContext, imageUrl, mention);
-      console.log("[voice-bridge] forwarded to Discord:", trimmed.slice(0, 80), imageUrl ? "with image" : "");
-    } catch (e) {
-      currentRequestId = null;
-      console.error("[voice-bridge] webhook post error:", e.message);
-    }
-  });
+  let currentTarget = null;
 
   const client = new Client({
     intents: [
@@ -904,6 +946,59 @@ function start() {
   let awaitingResponse = false;
   let armTimer = null;
   let selfId = null;
+
+  function disarmResponse(reason) {
+    awaitingResponse = false;
+    currentRequestId = null;
+    currentTarget = null;
+    if (armTimer) clearTimeout(armTimer);
+    armTimer = null;
+    if (reason) console.log(`[voice-bridge] ${reason} — disarmed`);
+  }
+
+  function armResponse(requestId, target) {
+    awaitingResponse = true;
+    currentRequestId = requestId || null;
+    currentTarget = target || null;
+    if (armTimer) clearTimeout(armTimer);
+    armTimer = setTimeout(() => {
+      disarmResponse("timeout");
+    }, readTimeoutMs());
+    console.log(`[voice-bridge] armed for next response target=${voiceTargetLabel(currentTarget)}`);
+  }
+
+  // iOS → Ably "request" 이벤트 받으면 Discord로 post
+  ablyChannel.subscribe("request", async (msg) => {
+    const data = msg.data || {};
+    const text = typeof data === "string" ? data : data.text;
+    const imageUrl = typeof data === "object" && typeof data.image_url === "string" ? data.image_url : null;
+    const mention = typeof data === "object" && typeof data.mention === "string" ? data.mention : null;
+    if (!text || typeof text !== "string") return;
+    currentRequestId = typeof data === "object" && typeof data.request_id === "string" ? data.request_id : null;
+    currentTarget = normalizeVoiceTarget(data);
+    try {
+      const trimmed = text.trim();
+      // Registration is intentionally NOT handled inside voice requests.
+      // Safer flow: send the photo to Discord, then reply to that photo message with
+      // `이름 등록` or `이름 샘플 추가`. This avoids bots/voice text confusing register intent.
+      const location = typeof data === "object" ? data.location : null;
+      console.log(`[voice-bridge] request location: ${summarizeLocationForLog(location)}`);
+      const faceContext = imageUrl ? await buildFaceMemoryContext(imageUrl) : "";
+      const textWithContext = await buildVoiceRequestText(trimmed, { location, faceContext });
+      console.log(`[voice-bridge] request context: ${summarizeVoiceContextForLog(textWithContext)}`);
+      const postedViaClient = await postViaDiscordClient(client, textWithContext, imageUrl, mention, currentTarget);
+      if (!postedViaClient) {
+        await postViaWebhook(textWithContext, imageUrl, mention);
+        currentTarget = webhookVoiceTarget();
+      }
+      armResponse(currentRequestId, currentTarget);
+      console.log(`[voice-bridge] forwarded to Discord target=${voiceTargetLabel(currentTarget)}:`, trimmed.slice(0, 80), imageUrl ? "with image" : "");
+    } catch (e) {
+      disarmResponse("post error");
+      console.error("[voice-bridge] Discord post error:", e.message);
+    }
+  });
+
   client.once(Events.ClientReady, (c) => {
     selfId = c.user.id;
     console.log(`[voice-bridge] listener ready as ${c.user.tag} (${selfId})`);
@@ -914,7 +1009,7 @@ function start() {
   });
 
   client.on(Events.MessageCreate, async (msg) => {
-    if (!isWatchedVoiceChannel(msg)) return;
+    if (!isWatchedVoiceChannel(msg) && !isCurrentVoiceTarget(msg, currentTarget)) return;
     if (msg.author.id === selfId) return;
 
     // Discord 직접 사진 face 처리 + 무멘션 followup relay는 relay-bridge가 담당.
@@ -922,15 +1017,7 @@ function start() {
     // User or webhook [voice] → arm (webhook은 author.bot=true지만 msg.webhookId 있음)
     const isUserOrWebhook = !msg.author.bot || msg.webhookId != null;
     if (isUserOrWebhook && msg.content.trim().toLowerCase().startsWith("[voice]")) {
-      awaitingResponse = true;
-      if (armTimer) clearTimeout(armTimer);
-      armTimer = setTimeout(() => {
-        awaitingResponse = false;
-        currentRequestId = null;
-        console.log("[voice-bridge] timeout — disarmed");
-      }, readTimeoutMs());
-      console.log("[voice-bridge] armed for next 빵빵 response");
-
+      armResponse(currentRequestId, messageVoiceTarget(msg));
       return;
     }
 
@@ -953,6 +1040,7 @@ function start() {
 
     awaitingResponse = false;
     if (armTimer) clearTimeout(armTimer);
+    armTimer = null;
 
     try {
       const replyPayload = {
@@ -971,9 +1059,11 @@ function start() {
       if (bot.voiceSettings) replyPayload.voice_settings = bot.voiceSettings;
       await ablyChannel.publish("reply", replyPayload);
       currentRequestId = null;
+      currentTarget = null;
       console.log(`[voice-bridge] published from ${bot.displayName}(${bot.key}):`, cleaned.slice(0, 80));
     } catch (e) {
       currentRequestId = null;
+      currentTarget = null;
       console.error("[voice-bridge] ably publish error", e);
     }
   });
