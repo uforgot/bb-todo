@@ -41,22 +41,22 @@
     "boongboong": {
       "displayName": "붕붕",
       "discordUserId": "1491449020579708948",
-      "voiceId": "sf8Bpb1IU97NI9BHSMRf",
+      "voiceId": "bQlkYuipD5BHEhntA5iz",
       "gender": "female",
       "color": "#8B5CF6",
       "avatarUrl": "/bot/boong.png",
       "ttsModel": "eleven_v3",
       "voiceSettings": {
         "stability": 0.3,
-        "similarityBoost": 0.65,
-        "style": 0.72,
-        "speed": 1.2
+        "similarityBoost": 0.5,
+        "style": 0.15,
+        "speed": 1.0
       }
     },
     "obbang": {
       "displayName": "오빵",
       "discordUserId": "1490773072813232138",
-      "voiceId": "prgs92xTdxeczorJi7ez",
+      "voiceId": "mK6Q1HRYYwUJwQGwMPYw",
       "gender": "male",
       "color": "#10B981",
       "avatarUrl": "/bot/obbang.png",

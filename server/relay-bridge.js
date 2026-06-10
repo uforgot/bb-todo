@@ -10,6 +10,9 @@ const { Events } = require("discord.js");
 
 const vb = require("./voice-bridge");
 
+const FOLLOWUP_RELAY_ENABLED = /^true$/i.test(process.env.RELAY_FOLLOWUP_ENABLED || "");
+const MAX_PREVIOUS_BOT_AGE_MS = 3 * 60 * 60 * 1000;
+
 function isVoicePrefix(msg) {
   return String(msg.content || "").trim().toLowerCase().startsWith("[voice]");
 }
@@ -30,6 +33,7 @@ async function findImmediatePreviousConfiguredBotMessage(msg, byDiscordId, byKey
     const fetched = await msg.channel.messages.fetch({ limit: 1, before: msg.id });
     for (const prev of fetched.values()) {
       if (!prev.author?.bot) continue;
+      if (Date.now() - prev.createdTimestamp > MAX_PREVIOUS_BOT_AGE_MS) continue;
       const bot = vb.resolveConfiguredBotFromAuthor(prev.author, prev.member, byDiscordId, byKey);
       if (bot) return { prev, bot };
     }
@@ -48,21 +52,50 @@ function collectAttachmentFiles(msg) {
   return files;
 }
 
-async function relayAsCopiedMessage(msg, targetBot) {
-  if (!targetBot || !targetBot.discordUserId) return false;
-  // Discord reply reference에 의존하지 않고, listener가 원문 텍스트와 첨부를 직접 복사한다.
-  // 이렇게 해야 agent 입력이 댓글 컨텍스트/릴레이 프롬프트 없이 단순한 사용자 발화로 들어간다.
+function getAuthorLabel(msg) {
+  return msg.member?.displayName || msg.author?.globalName || msg.author?.username || "unknown";
+}
+
+function buildRelayContent(msg, targetBot, previousBotMessage) {
   const text = String(msg.content || "").trim();
-  const content = text
-    ? `<@${targetBot.discordUserId}> ${text}`
-    : `<@${targetBot.discordUserId}>`;
+  const userContent = text || "(attachment only)";
+  const context = [
+    "[relay_context]",
+    "reason=unmentioned_followup_after_bot_message",
+    `target_bot_id=${targetBot.discordUserId}`,
+    `target_bot_name=${targetBot.displayName || ""}`,
+    `original_user_id=${msg.author.id}`,
+    `original_user_name=${getAuthorLabel(msg)}`,
+    `original_message_id=${msg.id}`,
+    `original_channel_id=${msg.channelId}`,
+    `previous_bot_message_id=${previousBotMessage?.id || ""}`,
+  ].join("\n");
+
+  return [
+    `<@${targetBot.discordUserId}>`,
+    "[relay_instructions]",
+    "This is an automatic relay for an unmentioned follow-up after your previous message.",
+    "The listener bot is not the real speaker.",
+    "Treat only [user_content] as the user's message.",
+    "Use [relay_context] only to identify the original user/channel/message.",
+    "If [user_content] is not actually meant for you, reply exactly NO_REPLY.",
+    "",
+    context,
+    "",
+    "[user_content]",
+    userContent,
+  ].join("\n");
+}
+
+async function relayAsCopiedMessage(msg, targetBot, previousBotMessage) {
+  if (!targetBot || !targetBot.discordUserId) return false;
   const files = collectAttachmentFiles(msg);
   await msg.channel.send({
-    content,
+    content: buildRelayContent(msg, targetBot, previousBotMessage),
     allowedMentions: { users: [targetBot.discordUserId], repliedUser: false },
     files: files.length ? files : undefined,
   });
-  console.log(`[relay-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId}) (copied${files.length ? `, ${files.length} attachment(s)` : ""})`);
+  console.log(`[relay-bridge] relayed followup → ${targetBot.displayName}(${targetBot.discordUserId}) (enveloped${files.length ? `, ${files.length} attachment(s)` : ""})`);
   return true;
 }
 
@@ -85,11 +118,17 @@ async function relayUnmentionedFollowup(msg) {
   // 전체 채널 relay에서 사람들 대화를 건너뛰고 더 오래된 봇을 잡으면 오발화가 난다.
   const hit = await findImmediatePreviousConfiguredBotMessage(msg, byDiscordId, byKey);
   if (!hit) return false;
-  return relayAsCopiedMessage(msg, hit.bot);
+  return relayAsCopiedMessage(msg, hit.bot, hit.prev);
 }
 
 function attach(client, { isWatchedVoiceChannel } = {}) {
   if (!client) throw new Error("relay-bridge.attach: client required");
+
+  if (!FOLLOWUP_RELAY_ENABLED) {
+    console.log("[relay-bridge] disabled (set RELAY_FOLLOWUP_ENABLED=true to re-enable)");
+    return;
+  }
+
   const isWatched = isWatchedVoiceChannel || vb.isWatchedVoiceChannel;
 
   client.on(Events.MessageCreate, async (msg) => {

@@ -6,7 +6,9 @@
  */
 
 const path = require("path");
+const os = require("os");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
+require("dotenv").config({ path: path.join(os.homedir(), ".openclaw/.env") });
 
 const http = require("http");
 const { execSync } = require("child_process");
@@ -22,7 +24,9 @@ const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY;
 const ANTHROPIC_ADMIN_API_KEY = process.env.ANTHROPIC_ADMIN_API_KEY;
 const OPENAI_ADMIN_API_KEY = process.env.OPENAI_ADMIN_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const CRON_JOBS_PATH = process.env.CRON_JOBS_PATH || path.join(require("os").homedir(), ".openclaw/cron/jobs.json");
+const XAI_MANAGEMENT_API_KEY = process.env.XAI_MANAGEMENT_API_KEY;
+const XAI_TEAM_ID = process.env.XAI_TEAM_ID;
+const CRON_JOBS_PATH = process.env.CRON_JOBS_PATH || path.join(os.homedir(), ".openclaw/cron/jobs.json");
 const CRON_POLL_INTERVAL = parseInt(process.env.CRON_POLL_INTERVAL || "300000"); // 5 min
 const DB_PATH = process.env.CRON_DB_PATH || path.join(__dirname, "cron.db");
 
@@ -647,6 +651,38 @@ async function getOpenRouterCredits() {
   };
 }
 
+async function getXaiCredits() {
+  if (!XAI_MANAGEMENT_API_KEY || !XAI_TEAM_ID) return null;
+
+  const res = await httpsJson({
+    hostname: "management-api.x.ai",
+    path: `/v1/billing/teams/${encodeURIComponent(XAI_TEAM_ID)}/prepaid/balance`,
+    headers: {
+      Authorization: `Bearer ${XAI_MANAGEMENT_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  const totalCentsRaw = res.data?.total?.val;
+  if (res.status !== 200 || totalCentsRaw == null) {
+    console.error("xAI prepaid balance error:", res.status, res.error || res.parseError || res.raw || "unknown");
+    return null;
+  }
+
+  const totalCents = Number(totalCentsRaw);
+  if (!Number.isFinite(totalCents)) {
+    console.error("xAI prepaid balance parse error:", totalCentsRaw);
+    return null;
+  }
+
+  return {
+    prepaid_balance: Math.max(-totalCents, 0) / 100,
+    prepaid_balance_cents: totalCents,
+    currency: "USD",
+    source: "management-api.x.ai/v1/billing/teams/:team_id/prepaid/balance",
+  };
+}
+
 async function getOpenAIUsage() {
   if (!OPENAI_ADMIN_API_KEY) return null;
 
@@ -780,15 +816,16 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/usage" || url.pathname === "/usage/") {
-      const [claude, kimi, openai, codexQuota, openrouter] = await Promise.all([
+      const [claude, kimi, openai, codexQuota, openrouter, xai] = await Promise.all([
         getClaudeUsage(),
         getKimiBalance(),
         getOpenAIUsage(),
         getOpenClawCodexQuota(),
         getOpenRouterCredits(),
+        getXaiCredits(),
       ]);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ claude, kimi, openai, codexQuota, openrouter, timestamp: new Date().toISOString() }));
+      res.end(JSON.stringify({ claude, kimi, openai, codexQuota, openrouter, xai, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/claude") {
       const claude = await getClaudeUsage();
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -805,6 +842,10 @@ const server = http.createServer(async (req, res) => {
       const openrouter = await getOpenRouterCredits();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ openrouter, timestamp: new Date().toISOString() }));
+    } else if (url.pathname === "/usage/xai") {
+      const xai = await getXaiCredits();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ xai, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/codex") {
       const codexQuota = await getOpenClawCodexQuota();
       res.writeHead(200, { "Content-Type": "application/json" });

@@ -32,6 +32,7 @@ const BB_USER_ID = process.env.BBANGBBANG_USER_ID || "1471495923400970377"; // �
 const DEFAULT_BOT_KEY = "bbangbbang";
 const ABLY_CHANNEL = process.env.ABLY_VOICE_CHANNEL || "bb-voice";
 const VOICE_WEBHOOK_URL = process.env.DISCORD_VOICE_WEBHOOK_URL || ""; // hint 박을 webhook
+const VOICE_THREAD_ID = process.env.DISCORD_VOICE_THREAD_ID || "";
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
 const PLACES_API_URL = process.env.BB_ADMIN_PLACES_API_URL || "http://127.0.0.1:3000/api/places";
 const PLACES_CACHE_TTL_MS = Number(process.env.PLACES_CACHE_TTL_MS || 30_000);
@@ -374,6 +375,21 @@ async function prependLocationContext(text, rawLocation) {
   return buildVoiceRequestText(text, { location: rawLocation });
 }
 
+function voiceWebhookUrl() {
+  if (!VOICE_THREAD_ID) return VOICE_WEBHOOK_URL;
+
+  try {
+    const url = new URL(VOICE_WEBHOOK_URL);
+    if (!url.searchParams.has("thread_id")) {
+      url.searchParams.set("thread_id", VOICE_THREAD_ID);
+    }
+    return url.toString();
+  } catch {
+    const sep = VOICE_WEBHOOK_URL.includes("?") ? "&" : "?";
+    return `${VOICE_WEBHOOK_URL}${sep}thread_id=${encodeURIComponent(VOICE_THREAD_ID)}`;
+  }
+}
+
 async function postViaWebhook(text, imageUrl, mentionKey) {
   if (!VOICE_WEBHOOK_URL) throw new Error("DISCORD_VOICE_WEBHOOK_URL not set");
   const attachment = resolveLocalImageAttachment(imageUrl);
@@ -399,7 +415,7 @@ async function postViaWebhook(text, imageUrl, mentionKey) {
         body: JSON.stringify(payload),
       };
 
-  const res = await fetch(VOICE_WEBHOOK_URL, fetchOptions);
+  const res = await fetch(voiceWebhookUrl(), fetchOptions);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`POST webhook ${res.status}: ${body.slice(0, 200)}`);
@@ -849,6 +865,7 @@ function start() {
 
   const ably = new Ably.Realtime(ABLY_KEY);
   const ablyChannel = ably.channels.get(ABLY_CHANNEL);
+  let currentRequestId = null;
 
   // iOS → Ably "request" 이벤트 받으면 hint 박아 Discord webhook으로 post
   ablyChannel.subscribe("request", async (msg) => {
@@ -857,6 +874,7 @@ function start() {
     const imageUrl = typeof data === "object" && typeof data.image_url === "string" ? data.image_url : null;
     const mention = typeof data === "object" && typeof data.mention === "string" ? data.mention : null;
     if (!text || typeof text !== "string") return;
+    currentRequestId = typeof data === "object" && typeof data.request_id === "string" ? data.request_id : null;
     try {
       const trimmed = text.trim();
       // Registration is intentionally NOT handled inside voice requests.
@@ -870,6 +888,7 @@ function start() {
       await postViaWebhook(textWithContext, imageUrl, mention);
       console.log("[voice-bridge] forwarded to Discord:", trimmed.slice(0, 80), imageUrl ? "with image" : "");
     } catch (e) {
+      currentRequestId = null;
       console.error("[voice-bridge] webhook post error:", e.message);
     }
   });
@@ -889,6 +908,7 @@ function start() {
     selfId = c.user.id;
     console.log(`[voice-bridge] listener ready as ${c.user.tag} (${selfId})`);
     console.log(`[voice-bridge] watching voice channels [${BB_CHANNEL_IDS.join(",")}], ably channel "${ABLY_CHANNEL}"`);
+    if (VOICE_THREAD_ID) console.log(`[voice-bridge] posting voice webhook to thread ${VOICE_THREAD_ID}`);
     console.log(`[voice-bridge] watching relay channels ${RELAY_ALL_VISIBLE_CHANNELS ? "[all visible]" : `[${RELAY_CHANNEL_IDS.join(",")}]`}`);
     console.log(`[voice-bridge] BB user id = ${BB_USER_ID || "(any bot)"}`);
   });
@@ -906,6 +926,7 @@ function start() {
       if (armTimer) clearTimeout(armTimer);
       armTimer = setTimeout(() => {
         awaitingResponse = false;
+        currentRequestId = null;
         console.log("[voice-bridge] timeout — disarmed");
       }, readTimeoutMs());
       console.log("[voice-bridge] armed for next 빵빵 response");
@@ -945,11 +966,14 @@ function start() {
         speaker_color: bot.color,
         voice_id: bot.voiceId,
       };
+      if (currentRequestId) replyPayload.request_id = currentRequestId;
       if (bot.ttsModel) replyPayload.tts_model = bot.ttsModel;
       if (bot.voiceSettings) replyPayload.voice_settings = bot.voiceSettings;
       await ablyChannel.publish("reply", replyPayload);
+      currentRequestId = null;
       console.log(`[voice-bridge] published from ${bot.displayName}(${bot.key}):`, cleaned.slice(0, 80));
     } catch (e) {
+      currentRequestId = null;
       console.error("[voice-bridge] ably publish error", e);
     }
   });

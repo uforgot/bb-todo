@@ -48,6 +48,9 @@ export function TodoItem({ item, onToggle, disabled, dimmed, sectionLabel, isFir
             {isReview && "👀 "}{item.title}
           </span>
         </button>
+        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/45">
+          #{item.id}
+        </span>
         {hasDesc && (
           <span className="shrink-0 size-4 flex items-center justify-center text-muted-foreground">
             {open ? (
