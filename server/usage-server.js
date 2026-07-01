@@ -15,6 +15,7 @@ const { execSync } = require("child_process");
 const https = require("https");
 const plist = require("simple-plist");
 const fs = require("fs");
+const crypto = require("crypto");
 const Database = require("better-sqlite3");
 const sharp = require("sharp");
 
@@ -29,6 +30,12 @@ const XAI_TEAM_ID = process.env.XAI_TEAM_ID;
 const CRON_JOBS_PATH = process.env.CRON_JOBS_PATH || path.join(os.homedir(), ".openclaw/cron/jobs.json");
 const CRON_POLL_INTERVAL = parseInt(process.env.CRON_POLL_INTERVAL || "300000"); // 5 min
 const DB_PATH = process.env.CRON_DB_PATH || path.join(__dirname, "cron.db");
+const KUKU_SUPABASE_URL = stripTrailingSlash(process.env.KUKU_SUPABASE_URL || process.env.DF_REVIEW_SUPABASE_URL || process.env.SUPABASE_URL || "");
+const KUKU_SUPABASE_KEY = process.env.KUKU_SUPABASE_SERVICE_ROLE_KEY || process.env.KUKU_SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
+const REVIEW_FIGMA_IMAGES_TABLE = process.env.REVIEW_FIGMA_IMAGES_TABLE || process.env.KUKU_REVIEW_FIGMA_IMAGES_TABLE || "review_figma_images";
+const REVIEW_FIGMA_IMAGES_SOURCE = process.env.REVIEW_FIGMA_IMAGES_SOURCE || process.env.KUKU_DEFAULT_SOURCE || "supabase";
+const REVIEW_FIGMA_IMAGES_PUBLIC_PATH = normalizePublicPath(process.env.REVIEW_FIGMA_IMAGES_PUBLIC_PATH || "/review-figma-images");
+const REVIEW_FIGMA_IMAGES_DIR = process.env.REVIEW_FIGMA_IMAGES_DIR || path.join(__dirname, "images", "review-figma");
 
 if (!API_KEY) {
   console.error("❌ USAGE_API_KEY is required");
@@ -760,6 +767,603 @@ function sendError(res, code, message) {
   res.end(JSON.stringify({ error: message }));
 }
 
+function sendJson(res, code, body) {
+  res.writeHead(code, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body ?? null));
+}
+
+function stripTrailingSlash(value) {
+  return String(value || "").replace(/\/+$/, "");
+}
+
+function normalizePublicPath(value) {
+  const pathValue = stripTrailingSlash(String(value || "").trim());
+  if (!pathValue) return "";
+  return pathValue.startsWith("/") ? pathValue : `/${pathValue}`;
+}
+
+function normalizeOptionalText(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeImageFormat(value) {
+  return value === "png" || value === "jpg" || value === "webp" ? value : undefined;
+}
+
+function getImageMimeType(format) {
+  if (format === "png") return "image/png";
+  if (format === "jpg") return "image/jpeg";
+  return "image/webp";
+}
+
+function getImageFormatFromMimeType(mimeType) {
+  const normalized = String(mimeType || "").split(";")[0].trim().toLowerCase();
+  if (normalized === "image/png") return "png";
+  if (normalized === "image/jpeg" || normalized === "image/jpg") return "jpg";
+  if (normalized === "image/webp") return "webp";
+  return undefined;
+}
+
+function createReviewFigmaImageId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `${Date.now()}_${crypto.randomBytes(6).toString("hex")}`;
+}
+
+function sanitizeFilePart(value) {
+  return String(value || "review")
+    .trim()
+    .replace(/[^a-z0-9_-]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "review";
+}
+
+function normalizeFigmaNodeId(value) {
+  const nodeId = normalizeOptionalText(value);
+  if (!nodeId) return undefined;
+  return nodeId.includes(":") ? nodeId : nodeId.replace(/-/g, ":");
+}
+
+function parseReviewFigmaNodeRef(value) {
+  const input = normalizeOptionalText(value);
+  if (!input) return null;
+
+  const [fileKey, nodeId, extra] = input.split("->").map(part => part.trim());
+  if (fileKey && nodeId && extra === undefined) {
+    const normalizedNodeId = normalizeFigmaNodeId(nodeId);
+    return normalizedNodeId ? { fileKey, nodeId: normalizedNodeId } : null;
+  }
+
+  let figmaUrl;
+  try {
+    figmaUrl = new URL(input);
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)figma\.com$/i.test(figmaUrl.hostname)) return null;
+
+  const parts = figmaUrl.pathname.split("/").filter(Boolean);
+  const fileKeyIndex = parts.findIndex(part => ["design", "file", "proto", "board"].includes(part));
+  const urlFileKey = fileKeyIndex >= 0 ? parts[fileKeyIndex + 1] : "";
+  const urlNodeId = normalizeFigmaNodeId(figmaUrl.searchParams.get("node-id"));
+  return urlFileKey && urlNodeId ? { fileKey: urlFileKey, nodeId: urlNodeId } : null;
+}
+
+function normalizeReviewFigmaImageTarget(target) {
+  if (target?.type === "figma-node") {
+    return {
+      type: "figma-node",
+      projectId: target.projectId,
+      fileKey: target.fileKey,
+      nodeId: target.nodeId,
+    };
+  }
+
+  return {
+    type: "route",
+    projectId: target.projectId,
+    pageUrl: target.pageUrl,
+    slot: target.slot || "",
+    viewport: target.viewport
+      ? {
+          label: target.viewport.label || "",
+          width: typeof target.viewport.width === "number" ? target.viewport.width : null,
+          height: typeof target.viewport.height === "number" ? target.viewport.height : null,
+          scope: target.viewport.scope || "",
+        }
+      : null,
+  };
+}
+
+function getReviewFigmaImageTargetKey(target) {
+  return JSON.stringify(normalizeReviewFigmaImageTarget(target));
+}
+
+function parseReviewFigmaImageTarget(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.type === "route") {
+    if (typeof value.projectId !== "string" || typeof value.pageUrl !== "string") return null;
+    return {
+      type: "route",
+      projectId: value.projectId,
+      pageUrl: value.pageUrl,
+      viewport: value.viewport && typeof value.viewport === "object" ? value.viewport : undefined,
+      slot: typeof value.slot === "string" ? value.slot : undefined,
+    };
+  }
+  if (value.type === "figma-node") {
+    if (
+      typeof value.projectId !== "string" ||
+      typeof value.fileKey !== "string" ||
+      typeof value.nodeId !== "string"
+    ) {
+      return null;
+    }
+    return {
+      type: "figma-node",
+      projectId: value.projectId,
+      fileKey: value.fileKey,
+      nodeId: value.nodeId,
+    };
+  }
+  return null;
+}
+
+function parseReviewFigmaImageTargetParam(value) {
+  if (!value) return null;
+  try {
+    return parseReviewFigmaImageTarget(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function parseAddReviewFigmaImageInput(value) {
+  if (!value || typeof value !== "object") return null;
+  const target = parseReviewFigmaImageTarget(value.target);
+  if (!target || typeof value.figmaUrl !== "string") return null;
+  return {
+    target,
+    figmaUrl: value.figmaUrl,
+    label: normalizeOptionalText(value.label),
+    order: typeof value.order === "number" && Number.isFinite(value.order) ? value.order : undefined,
+    imageFormat: normalizeImageFormat(value.imageFormat),
+    asset: parseReviewFigmaImageAssetInput(value.asset),
+  };
+}
+
+function parseReviewFigmaImageAssetInput(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const imageFormat = normalizeImageFormat(value.imageFormat);
+  if (!imageFormat || typeof value.dataUrl !== "string" || typeof value.mimeType !== "string") {
+    return undefined;
+  }
+  return {
+    dataUrl: value.dataUrl,
+    imageFormat,
+    mimeType: value.mimeType,
+    byteSize: typeof value.byteSize === "number" ? value.byteSize : undefined,
+    width: typeof value.width === "number" ? value.width : undefined,
+    height: typeof value.height === "number" ? value.height : undefined,
+  };
+}
+
+function parseUpdateReviewFigmaImageInput(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    label: typeof value.label === "string" ? value.label : undefined,
+    order: typeof value.order === "number" && Number.isFinite(value.order) ? value.order : undefined,
+  };
+}
+
+function parseReorderReviewFigmaImagesInput(value) {
+  if (!value || typeof value !== "object") return null;
+  const target = parseReviewFigmaImageTarget(value.target);
+  if (!target || !Array.isArray(value.imageIds)) return null;
+  return {
+    target,
+    imageIds: value.imageIds.filter(id => typeof id === "string"),
+  };
+}
+
+function decodeReviewFigmaImageAsset(asset) {
+  const mimeType = String(asset.mimeType || "").split(";")[0].trim().toLowerCase();
+  const imageFormat = getImageFormatFromMimeType(mimeType) || asset.imageFormat;
+  if (!normalizeImageFormat(imageFormat)) throw new Error("Unsupported Figma image asset MIME type.");
+
+  const match = /^data:([^;,]+);base64,([a-zA-Z0-9+/=\s]+)$/.exec(asset.dataUrl);
+  if (!match) throw new Error("Valid Figma image asset data URL is required.");
+
+  const dataUrlMimeType = String(match[1] || "").split(";")[0].trim().toLowerCase();
+  if (dataUrlMimeType && dataUrlMimeType !== mimeType) {
+    throw new Error("Figma image asset MIME type mismatch.");
+  }
+
+  return {
+    data: Buffer.from(match[2].replace(/\s/g, ""), "base64"),
+    imageFormat,
+    mimeType,
+  };
+}
+
+async function normalizeReviewFigmaImageBuffer(buffer, targetFormat) {
+  const format = normalizeImageFormat(targetFormat) || "webp";
+  let output = buffer;
+  if (format === "webp") output = await sharp(buffer).webp({ quality: 90 }).toBuffer();
+  if (format === "jpg") output = await sharp(buffer).jpeg({ quality: 88 }).toBuffer();
+  if (format === "png") output = await sharp(buffer).png().toBuffer();
+
+  const metadata = await sharp(output).metadata().catch(() => ({}));
+  return {
+    data: output,
+    imageFormat: format,
+    mimeType: getImageMimeType(format),
+    width: typeof metadata.width === "number" ? metadata.width : undefined,
+    height: typeof metadata.height === "number" ? metadata.height : undefined,
+  };
+}
+
+async function renderReviewFigmaImageAsset({ figmaUrl, imageFormat, requestToken }) {
+  const ref = parseReviewFigmaNodeRef(figmaUrl);
+  if (!ref) throw new Error("A Figma node link or fileKey->nodeId value is required.");
+
+  const token = normalizeOptionalText(requestToken) || normalizeOptionalText(process.env.FIGMA_TOKEN);
+  if (!token) throw new Error("Figma token is required.");
+
+  const targetFormat = normalizeImageFormat(imageFormat) || "webp";
+  const renderFormat = targetFormat === "jpg" ? "jpg" : "png";
+  const apiUrl = new URL(`/v1/images/${encodeURIComponent(ref.fileKey)}`, "https://api.figma.com");
+  apiUrl.searchParams.set("ids", ref.nodeId);
+  apiUrl.searchParams.set("format", renderFormat);
+
+  const response = await fetch(apiUrl, { headers: { "X-Figma-Token": token } });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.err || `Figma image render failed with ${response.status}`);
+  }
+
+  const imageUrl = body?.images?.[ref.nodeId];
+  if (!imageUrl) throw new Error(`Figma image render returned no URL for ${ref.nodeId}.`);
+
+  const imageResponse = await fetch(imageUrl);
+  if (!imageResponse.ok) {
+    throw new Error(`Figma image download failed with ${imageResponse.status}`);
+  }
+
+  const sourceData = Buffer.from(await imageResponse.arrayBuffer());
+  const normalized = await normalizeReviewFigmaImageBuffer(sourceData, targetFormat);
+  return { ...normalized, fileKey: ref.fileKey, nodeId: ref.nodeId };
+}
+
+function createReviewFigmaImageUrl(req, storageKey) {
+  const protocol = req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http");
+  const host = req.headers["x-forwarded-host"] || req.headers.host || `localhost:${PORT}`;
+  const origin = `${String(protocol).split(",")[0]}://${String(host).split(",")[0]}`;
+  return new URL(`${REVIEW_FIGMA_IMAGES_PUBLIC_PATH}/${encodeURIComponent(storageKey)}`, origin).toString();
+}
+
+async function writeReviewFigmaImageAsset(req, { projectId, imageId, asset, figmaUrl, imageFormat, requestToken }) {
+  const renderedOrProvided = asset
+    ? {
+        ...decodeReviewFigmaImageAsset(asset),
+        width: asset.width,
+        height: asset.height,
+      }
+    : await renderReviewFigmaImageAsset({ figmaUrl, imageFormat, requestToken });
+  const format = renderedOrProvided.imageFormat;
+  const storageKey = `${sanitizeFilePart(projectId)}_${sanitizeFilePart(imageId)}.${format === "jpg" ? "jpg" : format}`;
+  const filePath = path.join(REVIEW_FIGMA_IMAGES_DIR, storageKey);
+
+  fs.mkdirSync(REVIEW_FIGMA_IMAGES_DIR, { recursive: true });
+  fs.writeFileSync(filePath, renderedOrProvided.data);
+
+  let width = renderedOrProvided.width;
+  let height = renderedOrProvided.height;
+  if (!width || !height) {
+    const metadata = await sharp(renderedOrProvided.data).metadata().catch(() => ({}));
+    width = width || metadata.width;
+    height = height || metadata.height;
+  }
+
+  return {
+    imageUrl: createReviewFigmaImageUrl(req, storageKey),
+    imageFormat: format,
+    mimeType: renderedOrProvided.mimeType,
+    storageKey,
+    width,
+    height,
+    byteSize: renderedOrProvided.data.byteLength,
+  };
+}
+
+function getSafeReviewFigmaImagePath(storageKey) {
+  const decoded = decodeURIComponent(storageKey || "");
+  if (!decoded || decoded.includes("/") || decoded.includes("\\") || decoded.includes("..")) return null;
+  const filePath = path.join(REVIEW_FIGMA_IMAGES_DIR, decoded);
+  const resolved = path.resolve(filePath);
+  const root = path.resolve(REVIEW_FIGMA_IMAGES_DIR);
+  return resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
+}
+
+function sendReviewFigmaImageAsset(res, url) {
+  const prefix = `${REVIEW_FIGMA_IMAGES_PUBLIC_PATH}/`;
+  const storageKey = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : "";
+  const filePath = getSafeReviewFigmaImagePath(storageKey);
+  if (!filePath || !fs.existsSync(filePath)) {
+    sendError(res, 404, "not found");
+    return;
+  }
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  const mimeTypes = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" };
+  res.writeHead(200, {
+    "Content-Type": mimeTypes[ext] || "application/octet-stream",
+    "Cache-Control": "public, max-age=31536000, immutable",
+  });
+  fs.createReadStream(filePath).pipe(res);
+}
+
+async function requestReviewFigmaSupabase({ method = "GET", query = {}, body, prefer }) {
+  if (!KUKU_SUPABASE_URL || !KUKU_SUPABASE_KEY) {
+    throw new Error("KUKU_SUPABASE_URL and KUKU_SUPABASE_KEY are required.");
+  }
+
+  const requestUrl = new URL(`${KUKU_SUPABASE_URL}/rest/v1/${REVIEW_FIGMA_IMAGES_TABLE}`);
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null || value === "") continue;
+    requestUrl.searchParams.set(key, String(value));
+  }
+
+  const response = await fetch(requestUrl, {
+    method,
+    headers: {
+      apikey: KUKU_SUPABASE_KEY,
+      authorization: `Bearer ${KUKU_SUPABASE_KEY}`,
+      accept: "application/json",
+      "content-type": "application/json",
+      ...(prefer ? { prefer } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); } catch { data = text; }
+  }
+
+  if (!response.ok) {
+    const message = data && typeof data === "object" && data.message ? data.message : text;
+    throw new Error(`Supabase ${method} ${REVIEW_FIGMA_IMAGES_TABLE} failed (${response.status}): ${message}`);
+  }
+
+  return data;
+}
+
+function getReviewFigmaImageSource(req) {
+  return normalizeOptionalText(req.headers["x-review-source"]) || REVIEW_FIGMA_IMAGES_SOURCE;
+}
+
+function assertReviewFigmaProjectHeader(req, target) {
+  const headerProject = normalizeOptionalText(req.headers["x-review-project"]);
+  if (headerProject && target.projectId !== headerProject) {
+    throw Object.assign(new Error("target project is not allowed."), { statusCode: 403 });
+  }
+}
+
+async function listReviewFigmaImages(target, source) {
+  const rows = await requestReviewFigmaSupabase({
+    query: {
+      select: "*",
+      project_id: `eq.${target.projectId}`,
+      source: `eq.${source}`,
+      target_key: `eq.${getReviewFigmaImageTargetKey(target)}`,
+      order: "sort_order.asc,created_at.asc",
+    },
+  });
+  return Array.isArray(rows) ? rows.map(rowToReviewFigmaImage) : [];
+}
+
+async function createReviewFigmaImageRow(req, input) {
+  const ref = parseReviewFigmaNodeRef(input.figmaUrl);
+  if (!ref) throw new Error("A Figma node link or fileKey->nodeId value is required.");
+
+  const source = getReviewFigmaImageSource(req);
+  const current = await listReviewFigmaImages(input.target, source);
+  const id = createReviewFigmaImageId();
+  const asset = await writeReviewFigmaImageAsset(req, {
+    projectId: input.target.projectId,
+    imageId: id,
+    asset: input.asset,
+    figmaUrl: input.figmaUrl,
+    imageFormat: input.imageFormat,
+    requestToken: req.headers["x-figma-token"],
+  });
+  const now = new Date().toISOString();
+  const order = typeof input.order === "number"
+    ? input.order
+    : current.length
+      ? Math.max(...current.map(image => image.order)) + 1
+      : 0;
+  const target = input.target;
+  const row = {
+    id,
+    project_id: target.projectId,
+    source,
+    target_key: getReviewFigmaImageTargetKey(target),
+    target,
+    target_type: target.type,
+    page_url: target.type === "route" ? target.pageUrl : null,
+    viewport_label: target.type === "route" ? target.viewport?.label ?? null : null,
+    viewport_width: target.type === "route" ? target.viewport?.width ?? null : null,
+    viewport_height: target.type === "route" ? target.viewport?.height ?? null : null,
+    viewport_scope: target.type === "route" ? target.viewport?.scope ?? null : null,
+    slot: target.type === "route" ? target.slot ?? null : null,
+    figma_url: input.figmaUrl,
+    file_key: ref.fileKey,
+    node_id: ref.nodeId,
+    image_url: asset.imageUrl,
+    image_format: asset.imageFormat,
+    mime_type: asset.mimeType,
+    storage_key: asset.storageKey,
+    label: input.label ?? null,
+    sort_order: order,
+    width: asset.width ?? null,
+    height: asset.height ?? null,
+    byte_size: asset.byteSize,
+    created_at: now,
+    updated_at: now,
+  };
+
+  try {
+    const rows = await requestReviewFigmaSupabase({
+      method: "POST",
+      query: { select: "*" },
+      body: row,
+      prefer: "return=representation",
+    });
+    return rowToReviewFigmaImage(Array.isArray(rows) ? rows[0] : rows);
+  } catch (error) {
+    const filePath = getSafeReviewFigmaImagePath(asset.storageKey);
+    if (filePath) fs.rmSync(filePath, { force: true });
+    throw error;
+  }
+}
+
+async function updateReviewFigmaImageRow(id, patch) {
+  const body = {
+    ...(patch.label !== undefined ? { label: normalizeOptionalText(patch.label) ?? null } : {}),
+    ...(typeof patch.order === "number" ? { sort_order: patch.order } : {}),
+    updated_at: new Date().toISOString(),
+  };
+  const rows = await requestReviewFigmaSupabase({
+    method: "PATCH",
+    query: { id: `eq.${id}`, select: "*" },
+    body,
+    prefer: "return=representation",
+  });
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  if (!row) throw Object.assign(new Error(`Figma image not found: ${id}`), { statusCode: 404 });
+  return rowToReviewFigmaImage(row);
+}
+
+async function reorderReviewFigmaImageRows(input, source) {
+  const current = await listReviewFigmaImages(input.target, source);
+  const currentIds = new Set(current.map(image => image.id));
+  const nextIds = [
+    ...input.imageIds.filter(id => currentIds.has(id)),
+    ...current.map(image => image.id).filter(id => !input.imageIds.includes(id)),
+  ];
+  const updatedAt = new Date().toISOString();
+
+  await Promise.all(nextIds.map((id, index) =>
+    requestReviewFigmaSupabase({
+      method: "PATCH",
+      query: {
+        id: `eq.${id}`,
+        project_id: `eq.${input.target.projectId}`,
+        source: `eq.${source}`,
+        target_key: `eq.${getReviewFigmaImageTargetKey(input.target)}`,
+      },
+      body: { sort_order: index, updated_at: updatedAt },
+    })
+  ));
+
+  return listReviewFigmaImages(input.target, source);
+}
+
+async function deleteReviewFigmaImageRow(id) {
+  const rows = await requestReviewFigmaSupabase({
+    query: { id: `eq.${id}`, select: "*", limit: 1 },
+  });
+  const row = Array.isArray(rows) ? rows[0] : null;
+  if (!row) throw Object.assign(new Error(`Figma image not found: ${id}`), { statusCode: 404 });
+
+  await requestReviewFigmaSupabase({
+    method: "DELETE",
+    query: { id: `eq.${id}` },
+  });
+
+  const filePath = getSafeReviewFigmaImagePath(row.storage_key);
+  if (filePath) fs.rmSync(filePath, { force: true });
+}
+
+function rowToReviewFigmaImage(row) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    target: row.target,
+    figmaUrl: row.figma_url,
+    fileKey: row.file_key,
+    nodeId: row.node_id,
+    imageUrl: row.image_url,
+    imageFormat: row.image_format,
+    mimeType: row.mime_type,
+    label: row.label ?? undefined,
+    order: row.sort_order,
+    storageKey: row.storage_key,
+    width: row.width ?? undefined,
+    height: row.height ?? undefined,
+    byteSize: row.byte_size ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function getReviewFigmaEndpointItemId(pathname, endpoint) {
+  if (!pathname.startsWith(`${endpoint}/`)) return null;
+  const value = pathname.slice(endpoint.length + 1);
+  if (!value || value.includes("/")) return null;
+  return decodeURIComponent(value);
+}
+
+async function handleReviewFigmaImagesRequest(req, res, url) {
+  const endpoint = "/api/review/figma-images";
+  try {
+    if (req.method === "GET" && url.pathname === endpoint) {
+      const target = parseReviewFigmaImageTargetParam(url.searchParams.get("target"));
+      if (!target) { sendError(res, 400, "target query is required."); return; }
+      assertReviewFigmaProjectHeader(req, target);
+      sendJson(res, 200, await listReviewFigmaImages(target, getReviewFigmaImageSource(req)));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === endpoint) {
+      const input = parseAddReviewFigmaImageInput(JSON.parse((await parseBody(req)) || "null"));
+      if (!input) { sendError(res, 400, "valid add image input is required."); return; }
+      assertReviewFigmaProjectHeader(req, input.target);
+      sendJson(res, 201, await createReviewFigmaImageRow(req, input));
+      return;
+    }
+
+    if (req.method === "PATCH" && url.pathname === `${endpoint}/reorder`) {
+      const input = parseReorderReviewFigmaImagesInput(JSON.parse((await parseBody(req)) || "null"));
+      if (!input) { sendError(res, 400, "valid reorder input is required."); return; }
+      assertReviewFigmaProjectHeader(req, input.target);
+      sendJson(res, 200, await reorderReviewFigmaImageRows(input, getReviewFigmaImageSource(req)));
+      return;
+    }
+
+    const id = getReviewFigmaEndpointItemId(url.pathname, endpoint);
+    if (id && req.method === "PATCH") {
+      const patch = parseUpdateReviewFigmaImageInput(JSON.parse((await parseBody(req)) || "null"));
+      if (!patch) { sendError(res, 400, "valid update patch is required."); return; }
+      sendJson(res, 200, await updateReviewFigmaImageRow(id, patch));
+      return;
+    }
+
+    if (id && req.method === "DELETE") {
+      await deleteReviewFigmaImageRow(id);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    sendError(res, 405, "method not allowed.");
+  } catch (error) {
+    const status = error?.statusCode || 500;
+    const message = status >= 500 ? "Figma image endpoint failed." : error.message;
+    if (status >= 500) console.error("[review-figma-images]", error);
+    sendError(res, status, message);
+  }
+}
+
 // --- SSE (Server-Sent Events) ---
 const sseClients = new Set();
 
@@ -780,7 +1384,7 @@ setInterval(() => {
 const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Figma-Token, X-Review-Project, X-Review-Source");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
 
   if (req.method === "OPTIONS") {
@@ -793,7 +1397,13 @@ const server = http.createServer(async (req, res) => {
 
   // Auth check (images/static bot avatars + health exempt)
   const auth = req.headers.authorization;
-  if (!url.pathname.startsWith("/images/") && !url.pathname.startsWith("/bot/") && url.pathname !== "/health" && auth !== `Bearer ${API_KEY}`) {
+  if (
+    !url.pathname.startsWith("/images/") &&
+    !url.pathname.startsWith(`${REVIEW_FIGMA_IMAGES_PUBLIC_PATH}/`) &&
+    !url.pathname.startsWith("/bot/") &&
+    url.pathname !== "/health" &&
+    auth !== `Bearer ${API_KEY}`
+  ) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unauthorized" }));
     return;
@@ -1487,6 +2097,16 @@ const server = http.createServer(async (req, res) => {
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(channels));
+
+    // /api/review/figma-images — df-web-review-kit endpoint store
+    } else if (url.pathname === "/api/review/figma-images" || url.pathname.startsWith("/api/review/figma-images/")) {
+      await handleReviewFigmaImagesRequest(req, res, url);
+      return;
+
+    // GET /review-figma-images/* — static Figma review assets
+    } else if (url.pathname.startsWith(`${REVIEW_FIGMA_IMAGES_PUBLIC_PATH}/`) && req.method === "GET") {
+      sendReviewFigmaImageAsset(res, url);
+      return;
 
     // POST /api/images — 이미지 업로드
     } else if (url.pathname === "/api/images" && req.method === "POST") {
