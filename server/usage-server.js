@@ -16,6 +16,7 @@ const https = require("https");
 const plist = require("simple-plist");
 const fs = require("fs");
 const crypto = require("crypto");
+const zlib = require("zlib");
 const Database = require("better-sqlite3");
 const sharp = require("sharp");
 
@@ -36,6 +37,9 @@ const REVIEW_FIGMA_IMAGES_TABLE = process.env.REVIEW_FIGMA_IMAGES_TABLE || proce
 const REVIEW_FIGMA_IMAGES_SOURCE = process.env.REVIEW_FIGMA_IMAGES_SOURCE || process.env.KUKU_DEFAULT_SOURCE || "supabase";
 const REVIEW_FIGMA_IMAGES_PUBLIC_PATH = normalizePublicPath(process.env.REVIEW_FIGMA_IMAGES_PUBLIC_PATH || "/review-figma-images");
 const REVIEW_FIGMA_IMAGES_DIR = process.env.REVIEW_FIGMA_IMAGES_DIR || path.join(__dirname, "images", "review-figma");
+const REVIEW_ATTACHMENTS_PUBLIC_PATH = normalizePublicPath(process.env.REVIEW_ATTACHMENTS_PUBLIC_PATH || "/review-attachments");
+const REVIEW_ATTACHMENTS_DIR = process.env.REVIEW_ATTACHMENTS_DIR || path.join(__dirname, "images", "review-attachments");
+const REVIEW_ATTACHMENTS_MAX_BYTES = parseInt(process.env.REVIEW_ATTACHMENTS_MAX_BYTES || String(20 * 1024 * 1024), 10);
 
 if (!API_KEY) {
   console.error("❌ USAGE_API_KEY is required");
@@ -114,6 +118,19 @@ try { db.exec("ALTER TABLE items ADD COLUMN review_emoji TEXT"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN owner TEXT"); } catch {}
 // Migration: owner 빵빵/기타 봇 → AI 통일 (owner 모델은 AI / hyungju 둘로 단순화)
 try { db.exec("UPDATE items SET owner='AI' WHERE owner IS NOT NULL AND owner NOT IN ('hyungju','AI')"); } catch {}
+// Migration: Today Task Queue dispatch metadata
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_nonce TEXT"); } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_message_id TEXT"); } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_channel_id TEXT"); } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_started_at TEXT"); } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_attempt_count INTEGER DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_last_error TEXT"); } catch {}
+try {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_items_today_ai_queue ON items(is_today, owner, status, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_items_dispatch_nonce ON items(dispatch_nonce);
+  `);
+} catch {}
 // Migration: discord channel mapping
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_channel_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_thread_id TEXT"); } catch {}
@@ -762,6 +779,24 @@ function parseBody(req) {
   });
 }
 
+function readRequestBuffer(req, maxBytes = Infinity) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", chunk => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(Object.assign(new Error("payload too large"), { statusCode: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 function sendError(res, code, message) {
   res.writeHead(code, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: message }));
@@ -846,6 +881,23 @@ function parseReviewFigmaNodeRef(value) {
   const urlFileKey = fileKeyIndex >= 0 ? parts[fileKeyIndex + 1] : "";
   const urlNodeId = normalizeFigmaNodeId(figmaUrl.searchParams.get("node-id"));
   return urlFileKey && urlNodeId ? { fileKey: urlFileKey, nodeId: urlNodeId } : null;
+}
+
+function createReviewFigmaNodeUrl(ref, fileName = "Review") {
+  const safeFileName = encodeURIComponent(fileName).replace(/%2F/gi, "-");
+  const url = new URL(`https://www.figma.com/design/${encodeURIComponent(ref.fileKey)}/${safeFileName}`);
+  url.searchParams.set("node-id", ref.nodeId.replace(/:/g, "-"));
+  return url.toString();
+}
+
+function normalizeReviewFigmaUrl(value, ref) {
+  const input = normalizeOptionalText(value);
+  if (!input) return input;
+  try {
+    const url = new URL(input);
+    if (/^https?:$/i.test(url.protocol) && /(^|\.)figma\.com$/i.test(url.hostname)) return input;
+  } catch {}
+  return createReviewFigmaNodeUrl(ref);
 }
 
 function normalizeReviewFigmaImageTarget(target) {
@@ -987,16 +1039,23 @@ function decodeReviewFigmaImageAsset(asset) {
 
 async function normalizeReviewFigmaImageBuffer(buffer, targetFormat) {
   const format = normalizeImageFormat(targetFormat) || "webp";
+  let outputFormat = format;
   let output = buffer;
-  if (format === "webp") output = await sharp(buffer).webp({ quality: 90 }).toBuffer();
-  if (format === "jpg") output = await sharp(buffer).jpeg({ quality: 88 }).toBuffer();
-  if (format === "png") output = await sharp(buffer).png().toBuffer();
+  try {
+    if (format === "webp") output = await sharp(buffer).webp({ quality: 90 }).toBuffer();
+    if (format === "jpg") output = await sharp(buffer).jpeg({ quality: 88 }).toBuffer();
+    if (format === "png") output = await sharp(buffer).png({ compressionLevel: 9, palette: true, quality: 90 }).toBuffer();
+  } catch (error) {
+    if (format !== "webp") throw error;
+    outputFormat = "png";
+    output = await sharp(buffer).png({ compressionLevel: 9, palette: true, quality: 90 }).toBuffer();
+  }
 
   const metadata = await sharp(output).metadata().catch(() => ({}));
   return {
     data: output,
-    imageFormat: format,
-    mimeType: getImageMimeType(format),
+    imageFormat: outputFormat,
+    mimeType: getImageMimeType(outputFormat),
     width: typeof metadata.width === "number" ? metadata.width : undefined,
     height: typeof metadata.height === "number" ? metadata.height : undefined,
   };
@@ -1041,14 +1100,18 @@ function createReviewFigmaImageUrl(req, storageKey) {
   return new URL(`${REVIEW_FIGMA_IMAGES_PUBLIC_PATH}/${encodeURIComponent(storageKey)}`, origin).toString();
 }
 
-async function writeReviewFigmaImageAsset(req, { projectId, imageId, asset, figmaUrl, imageFormat, requestToken }) {
+async function writeReviewFigmaImageAsset(req, { projectId, imageId, asset, figmaUrl, requestToken }) {
+  const storageImageFormat = "webp";
   const renderedOrProvided = asset
-    ? {
-        ...decodeReviewFigmaImageAsset(asset),
-        width: asset.width,
-        height: asset.height,
-      }
-    : await renderReviewFigmaImageAsset({ figmaUrl, imageFormat, requestToken });
+    ? await normalizeReviewFigmaImageBuffer(
+        decodeReviewFigmaImageAsset(asset).data,
+        storageImageFormat
+      )
+    : await renderReviewFigmaImageAsset({
+        figmaUrl,
+        imageFormat: storageImageFormat,
+        requestToken,
+      });
   const format = renderedOrProvided.imageFormat;
   const storageKey = `${sanitizeFilePart(projectId)}_${sanitizeFilePart(imageId)}.${format === "jpg" ? "jpg" : format}`;
   const filePath = path.join(REVIEW_FIGMA_IMAGES_DIR, storageKey);
@@ -1099,6 +1162,294 @@ function sendReviewFigmaImageAsset(res, url) {
     "Cache-Control": "public, max-age=31536000, immutable",
   });
   fs.createReadStream(filePath).pipe(res);
+}
+
+function createReviewAttachmentId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `attachment-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+}
+
+function getMultipartBoundary(contentType) {
+  const match = String(contentType || "").match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  return match?.[1] || match?.[2] || "";
+}
+
+function parseMultipartFormData(buffer, boundary) {
+  const result = { fields: {}, files: {} };
+  const boundaryText = `--${boundary}`;
+  const parts = buffer.toString("binary").split(boundaryText);
+
+  for (let part of parts) {
+    if (!part || part === "--\r\n" || part === "--") continue;
+    if (part.startsWith("\r\n")) part = part.slice(2);
+    if (part.endsWith("\r\n")) part = part.slice(0, -2);
+    if (part.endsWith("--")) part = part.slice(0, -2);
+
+    const headerEnd = part.indexOf("\r\n\r\n");
+    if (headerEnd === -1) continue;
+    const rawHeaders = part.slice(0, headerEnd);
+    const bodyBinary = part.slice(headerEnd + 4);
+    const disposition = rawHeaders.match(/content-disposition:\s*([^\r\n]+)/i)?.[1] || "";
+    const name = disposition.match(/name="([^"]+)"/)?.[1];
+    if (!name) continue;
+
+    const filename = disposition.match(/filename="([^"]*)"/)?.[1];
+    const contentType = rawHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1]?.trim();
+    if (filename !== undefined) {
+      result.files[name] = {
+        filename,
+        mime: contentType,
+        data: Buffer.from(bodyBinary, "binary"),
+      };
+    } else {
+      result.fields[name] = Buffer.from(bodyBinary, "binary").toString("utf8");
+    }
+  }
+
+  return result;
+}
+
+function normalizeAttachmentMimeType(value) {
+  const mime = String(value || "").split(";")[0].trim().toLowerCase();
+  if (!mime || /[\r\n]/.test(mime)) return "application/octet-stream";
+  return mime;
+}
+
+function getAttachmentExtension(name, mime) {
+  const byMime = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "image/svg+xml": "svg",
+    "application/pdf": "pdf",
+    "text/plain": "txt",
+    "text/csv": "csv",
+    "application/zip": "zip",
+  }[mime];
+  if (byMime) return byMime;
+
+  const ext = path.extname(String(name || "")).slice(1).toLowerCase();
+  return /^[a-z0-9]{1,8}$/.test(ext) ? ext : "bin";
+}
+
+function replaceFileExtension(name, ext) {
+  const safeName = normalizeAttachmentName(name);
+  const base = safeName.replace(/\.[^.]+$/, "") || "attachment";
+  return `${base}.${ext}`;
+}
+
+function isReviewAttachmentRasterImage(mime) {
+  return mime === "image/jpeg" || mime === "image/jpg" || mime === "image/png" || mime === "image/webp";
+}
+
+async function prepareReviewAttachmentAsset({ data, mime, name }) {
+  if (mime === "image/svg+xml") {
+    const compressed = zlib.gzipSync(data, { level: 9 });
+    return {
+      data: compressed,
+      imageSource: data,
+      mime,
+      name,
+      extension: "svgz",
+      metadata: {
+        compression: "gzip",
+        originalMime: mime,
+        originalName: name,
+        originalSize: data.byteLength,
+      },
+    };
+  }
+
+  if (isReviewAttachmentRasterImage(mime)) {
+    try {
+      const converted = await sharp(data)
+        .rotate()
+        .webp({ quality: 82 })
+        .toBuffer();
+      return {
+        data: converted,
+        imageSource: converted,
+        mime: "image/webp",
+        name: replaceFileExtension(name, "webp"),
+        extension: "webp",
+        metadata: {
+          conversion: "webp",
+          originalMime: mime,
+          originalName: name,
+          originalSize: data.byteLength,
+        },
+      };
+    } catch (error) {
+      console.warn("[review-attachments] image conversion skipped:", error.message);
+    }
+  }
+
+  return {
+    data,
+    imageSource: data,
+    mime,
+    name,
+    extension: getAttachmentExtension(name, mime),
+    metadata: {},
+  };
+}
+
+async function createReviewAttachmentPreviewDataUrl(asset) {
+  if (!asset.mime.startsWith("image/")) return undefined;
+
+  try {
+    const preview = await sharp(asset.imageSource)
+      .rotate()
+      .resize({ width: 720, height: 720, fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 74 })
+      .toBuffer();
+
+    if (preview.byteLength > 256 * 1024) return undefined;
+    return `data:image/webp;base64,${preview.toString("base64")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function getMimeTypeFromAttachmentPath(filePath) {
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  return {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+    gif: "image/gif",
+    svg: "image/svg+xml",
+    pdf: "application/pdf",
+    txt: "text/plain; charset=utf-8",
+    csv: "text/csv; charset=utf-8",
+    zip: "application/zip",
+  }[ext] || "application/octet-stream";
+}
+
+function normalizeAttachmentName(value) {
+  const name = path.basename(String(value || "attachment")).replace(/[\r\n]+/g, " ").trim();
+  return name || "attachment";
+}
+
+function createReviewAttachmentUrl(req, storageKey) {
+  const protocol = req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http");
+  const host = req.headers["x-forwarded-host"] || req.headers.host || `localhost:${PORT}`;
+  const origin = `${String(protocol).split(",")[0]}://${String(host).split(",")[0]}`;
+  return new URL(`${REVIEW_ATTACHMENTS_PUBLIC_PATH}/${encodeURIComponent(storageKey)}`, origin).toString();
+}
+
+function getSafeReviewAttachmentPath(storageKey) {
+  const decoded = decodeURIComponent(storageKey || "");
+  if (!decoded || decoded.includes("/") || decoded.includes("\\") || decoded.includes("..")) return null;
+  const filePath = path.join(REVIEW_ATTACHMENTS_DIR, decoded);
+  const resolved = path.resolve(filePath);
+  const root = path.resolve(REVIEW_ATTACHMENTS_DIR);
+  return resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
+}
+
+async function createReviewAttachment(req) {
+  const contentType = req.headers["content-type"] || "";
+  if (!String(contentType).includes("multipart/form-data")) {
+    throw Object.assign(new Error("multipart/form-data is required."), { statusCode: 400 });
+  }
+
+  const boundary = getMultipartBoundary(contentType);
+  if (!boundary) throw Object.assign(new Error("multipart boundary is required."), { statusCode: 400 });
+
+  const form = parseMultipartFormData(await readRequestBuffer(req, REVIEW_ATTACHMENTS_MAX_BYTES), boundary);
+  const file = form.files.file || Object.values(form.files)[0];
+  if (!file?.data?.length) throw Object.assign(new Error("file is required."), { statusCode: 400 });
+
+  const id = createReviewAttachmentId();
+  const name = normalizeAttachmentName(form.fields.name || file.filename);
+  const mime = normalizeAttachmentMimeType(form.fields.mime || file.mime);
+  const kind = normalizeOptionalText(form.fields.kind) || (mime.startsWith("image/") ? "image" : "file");
+  const projectId = normalizeOptionalText(req.headers["x-review-project"]) || "review";
+  const source = normalizeOptionalText(req.headers["x-review-source"]) || REVIEW_FIGMA_IMAGES_SOURCE;
+  const asset = await prepareReviewAttachmentAsset({ data: file.data, mime, name });
+  const storageKey = `${sanitizeFilePart(projectId)}_${sanitizeFilePart(id)}.${asset.extension}`;
+  const filePath = path.join(REVIEW_ATTACHMENTS_DIR, storageKey);
+  const createdAt = new Date().toISOString();
+  let metadata = {};
+  if (form.fields.metadata) {
+    try { metadata = JSON.parse(form.fields.metadata); } catch {}
+  }
+
+  fs.mkdirSync(REVIEW_ATTACHMENTS_DIR, { recursive: true });
+  fs.writeFileSync(filePath, asset.data);
+
+  const imageMetadata = asset.mime.startsWith("image/")
+    ? await sharp(asset.imageSource).metadata().catch(() => ({}))
+    : {};
+  const previewUrl = await createReviewAttachmentPreviewDataUrl(asset);
+  const attachment = {
+    id,
+    url: createReviewAttachmentUrl(req, storageKey),
+    ...(previewUrl ? { previewUrl } : {}),
+    name: asset.name,
+    mime: asset.mime,
+    size: asset.data.byteLength,
+    kind,
+    width: typeof imageMetadata.width === "number" ? imageMetadata.width : undefined,
+    height: typeof imageMetadata.height === "number" ? imageMetadata.height : undefined,
+    metadata: {
+      ...metadata,
+      ...asset.metadata,
+      storage: "usage-server",
+      storageKey,
+      source,
+      ...(normalizeOptionalText(form.fields.item_id) ? { itemId: normalizeOptionalText(form.fields.item_id) } : {}),
+    },
+    createdAt,
+  };
+
+  fs.writeFileSync(`${filePath}.json`, JSON.stringify(attachment, null, 2));
+  return attachment;
+}
+
+function sendReviewAttachmentAsset(res, url) {
+  const prefix = `${REVIEW_ATTACHMENTS_PUBLIC_PATH}/`;
+  const storageKey = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : "";
+  const filePath = getSafeReviewAttachmentPath(storageKey);
+  if (!filePath || !fs.existsSync(filePath)) {
+    sendError(res, 404, "not found");
+    return;
+  }
+
+  let attachment = null;
+  try { attachment = JSON.parse(fs.readFileSync(`${filePath}.json`, "utf8")); } catch {}
+  const headers = {
+    "Content-Type": attachment?.mime ? normalizeAttachmentMimeType(attachment.mime) : getMimeTypeFromAttachmentPath(filePath),
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Private-Network": "true",
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (attachment?.metadata?.compression === "gzip" || filePath.endsWith(".svgz")) {
+    headers["Content-Encoding"] = "gzip";
+  }
+  res.writeHead(200, headers);
+  fs.createReadStream(filePath).pipe(res);
+}
+
+async function handleReviewAttachmentsRequest(req, res, url) {
+  const endpoint = "/api/review/review-attachments";
+  try {
+    if (req.method === "POST" && url.pathname === endpoint) {
+      sendJson(res, 201, await createReviewAttachment(req));
+      return;
+    }
+
+    sendError(res, 405, "method not allowed.");
+  } catch (error) {
+    const status = error?.statusCode || 500;
+    const message = status >= 500 ? "Review attachment endpoint failed." : error.message;
+    if (status >= 500) console.error("[review-attachments]", error);
+    sendError(res, status, message);
+  }
 }
 
 async function requestReviewFigmaSupabase({ method = "GET", query = {}, body, prefer }) {
@@ -1164,6 +1515,7 @@ async function listReviewFigmaImages(target, source) {
 async function createReviewFigmaImageRow(req, input) {
   const ref = parseReviewFigmaNodeRef(input.figmaUrl);
   if (!ref) throw new Error("A Figma node link or fileKey->nodeId value is required.");
+  const figmaUrl = normalizeReviewFigmaUrl(input.figmaUrl, ref);
 
   const source = getReviewFigmaImageSource(req);
   const current = await listReviewFigmaImages(input.target, source);
@@ -1172,7 +1524,7 @@ async function createReviewFigmaImageRow(req, input) {
     projectId: input.target.projectId,
     imageId: id,
     asset: input.asset,
-    figmaUrl: input.figmaUrl,
+    figmaUrl,
     imageFormat: input.imageFormat,
     requestToken: req.headers["x-figma-token"],
   });
@@ -1196,7 +1548,7 @@ async function createReviewFigmaImageRow(req, input) {
     viewport_height: target.type === "route" ? target.viewport?.height ?? null : null,
     viewport_scope: target.type === "route" ? target.viewport?.scope ?? null : null,
     slot: target.type === "route" ? target.slot ?? null : null,
-    figma_url: input.figmaUrl,
+    figma_url: figmaUrl,
     file_key: ref.fileKey,
     node_id: ref.nodeId,
     image_url: asset.imageUrl,
@@ -1364,6 +1716,25 @@ async function handleReviewFigmaImagesRequest(req, res, url) {
   }
 }
 
+function serializeTodoItem(i) {
+  return {
+    id: i.id,
+    title: i.title,
+    content: i.content,
+    status: i.status,
+    is_today: !!i.is_today,
+    review_count: i.review_count || 0,
+    review_emoji: i.review_emoji || null,
+    owner: i.owner || null,
+    dispatch_nonce: i.dispatch_nonce || null,
+    dispatch_message_id: i.dispatch_message_id || null,
+    dispatch_channel_id: i.dispatch_channel_id || null,
+    dispatch_started_at: i.dispatch_started_at || null,
+    dispatch_attempt_count: i.dispatch_attempt_count || 0,
+    dispatch_last_error: i.dispatch_last_error || null,
+  };
+}
+
 // --- SSE (Server-Sent Events) ---
 const sseClients = new Set();
 
@@ -1386,6 +1757,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Figma-Token, X-Review-Project, X-Review-Source");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -1400,6 +1772,7 @@ const server = http.createServer(async (req, res) => {
   if (
     !url.pathname.startsWith("/images/") &&
     !url.pathname.startsWith(`${REVIEW_FIGMA_IMAGES_PUBLIC_PATH}/`) &&
+    !url.pathname.startsWith(`${REVIEW_ATTACHMENTS_PUBLIC_PATH}/`) &&
     !url.pathname.startsWith("/bot/") &&
     url.pathname !== "/health" &&
     auth !== `Bearer ${API_KEY}`
@@ -1672,13 +2045,13 @@ const server = http.createServer(async (req, res) => {
           discord_thread_id: p.discord_thread_id || null,
           items: projItems
             .filter(i => i.category_id === null)
-            .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null, owner: i.owner || null })),
+            .map(serializeTodoItem),
           categories: projCats.map(c => ({
             id: c.id,
             name: c.name,
             items: projItems
               .filter(i => i.category_id === c.id)
-              .map(i => ({ id: i.id, title: i.title, content: i.content, status: i.status, is_today: !!i.is_today, review_count: i.review_count || 0, review_emoji: i.review_emoji || null, owner: i.owner || null })),
+              .map(serializeTodoItem),
           })),
         };
       });
@@ -2027,6 +2400,8 @@ const server = http.createServer(async (req, res) => {
       const stmt = db.prepare("UPDATE items SET status='in_progress' WHERE id=?");
       for (const id of assignedIds) stmt.run(id);
       broadcastSSE("items-changed", { action: "assign" });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ assigned: assignedIds.length, requested: item_ids.length, eligible: items.length }));
 
     // POST /api/assign-self — 형주한테 시키기 (자기 리마인드)
     } else if (url.pathname === "/api/assign-self" && req.method === "POST") {
@@ -2076,9 +2451,6 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ assigned: items.length }));
 
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ assigned: items.length }));
-
     // POST /api/discord-channels/sync — 수동 동기화
     } else if (url.pathname === "/api/discord-channels/sync" && req.method === "POST") {
       await syncDiscordChannels();
@@ -2103,9 +2475,19 @@ const server = http.createServer(async (req, res) => {
       await handleReviewFigmaImagesRequest(req, res, url);
       return;
 
+    // /api/review/review-attachments — df-web-review-kit attachment upload
+    } else if (url.pathname === "/api/review/review-attachments" || url.pathname.startsWith("/api/review/review-attachments/")) {
+      await handleReviewAttachmentsRequest(req, res, url);
+      return;
+
     // GET /review-figma-images/* — static Figma review assets
     } else if (url.pathname.startsWith(`${REVIEW_FIGMA_IMAGES_PUBLIC_PATH}/`) && req.method === "GET") {
       sendReviewFigmaImageAsset(res, url);
+      return;
+
+    // GET /review-attachments/* — static review attachments
+    } else if (url.pathname.startsWith(`${REVIEW_ATTACHMENTS_PUBLIC_PATH}/`) && req.method === "GET") {
+      sendReviewAttachmentAsset(res, url);
       return;
 
     // POST /api/images — 이미지 업로드
