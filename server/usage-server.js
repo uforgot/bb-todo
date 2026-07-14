@@ -40,6 +40,14 @@ const REVIEW_FIGMA_IMAGES_DIR = process.env.REVIEW_FIGMA_IMAGES_DIR || path.join
 const REVIEW_ATTACHMENTS_PUBLIC_PATH = normalizePublicPath(process.env.REVIEW_ATTACHMENTS_PUBLIC_PATH || "/review-attachments");
 const REVIEW_ATTACHMENTS_DIR = process.env.REVIEW_ATTACHMENTS_DIR || path.join(__dirname, "images", "review-attachments");
 const REVIEW_ATTACHMENTS_MAX_BYTES = parseInt(process.env.REVIEW_ATTACHMENTS_MAX_BYTES || String(20 * 1024 * 1024), 10);
+const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
+const DEFAULT_TODO_QUEUE_BOT_KEY = process.env.TODO_QUEUE_BOT_KEY || "bbangbbang";
+const DEFAULT_TODO_QUEUE_BOT_USER_ID = process.env.TODO_QUEUE_BOT_USER_ID || process.env.BBANGBBANG_USER_ID || "1471495923400970377";
+const TODAY_QUEUE_BRIDGE_ENABLED = !/^false$/i.test(process.env.TODAY_QUEUE_BRIDGE_ENABLED || "");
+const TODAY_QUEUE_BRIDGE_TOKEN = process.env.DISCORD_TODAY_QUEUE_BRIDGE_TOKEN || process.env.DISCORD_VOICE_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN || "";
+// Send queue task packets as the queue/listener bot, not as the selected worker AI.
+// The selected project AI stays the mention/marker author target.
+const TODAY_QUEUE_DISPATCH_TOKEN = process.env.DISCORD_TODAY_QUEUE_DISPATCH_TOKEN || TODAY_QUEUE_BRIDGE_TOKEN || process.env.DISCORD_PANG_TOKEN || "";
 
 if (!API_KEY) {
   console.error("❌ USAGE_API_KEY is required");
@@ -122,6 +130,9 @@ try { db.exec("UPDATE items SET owner='AI' WHERE owner IS NOT NULL AND owner NOT
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_nonce TEXT"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_message_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_channel_id TEXT"); } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_message_url TEXT"); } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_target_bot_key TEXT"); } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN dispatch_target_bot_user_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_started_at TEXT"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_attempt_count INTEGER DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_last_error TEXT"); } catch {}
@@ -131,9 +142,11 @@ try {
     CREATE INDEX IF NOT EXISTS idx_items_dispatch_nonce ON items(dispatch_nonce);
   `);
 } catch {}
-// Migration: discord channel mapping
+// Migration: discord channel mapping + project-level AI assignee
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_channel_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_thread_id TEXT"); } catch {}
+try { db.exec("ALTER TABLE projects ADD COLUMN default_ai_bot_key TEXT DEFAULT 'bbangbbang'"); } catch {}
+try { db.exec("UPDATE projects SET default_ai_bot_key='bbangbbang' WHERE default_ai_bot_key IS NULL OR trim(default_ai_bot_key)=''"); } catch {}
 // Discord channels table
 db.exec(`
   CREATE TABLE IF NOT EXISTS discord_channels (
@@ -1729,10 +1742,484 @@ function serializeTodoItem(i) {
     dispatch_nonce: i.dispatch_nonce || null,
     dispatch_message_id: i.dispatch_message_id || null,
     dispatch_channel_id: i.dispatch_channel_id || null,
+    dispatch_message_url: i.dispatch_message_url || null,
+    dispatch_target_bot_key: i.dispatch_target_bot_key || null,
+    dispatch_target_bot_user_id: i.dispatch_target_bot_user_id || null,
     dispatch_started_at: i.dispatch_started_at || null,
     dispatch_attempt_count: i.dispatch_attempt_count || 0,
     dispatch_last_error: i.dispatch_last_error || null,
   };
+}
+
+function stripJsonComments(raw) {
+  return String(raw || "").replace(/("(?:\\\\.|[^"\\\\])*")|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (m, str) => str || "");
+}
+
+function readTodoQueueBotsConfig() {
+  try {
+    const raw = fs.readFileSync(VOICE_CONFIG_PATH, "utf8");
+    const cfg = JSON.parse(stripJsonComments(raw));
+    return cfg && typeof cfg.bots === "object" ? cfg.bots : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveTodoQueueBot(botKey = DEFAULT_TODO_QUEUE_BOT_KEY) {
+  const bots = readTodoQueueBotsConfig();
+  const key = normalizeOptionalText(botKey) || DEFAULT_TODO_QUEUE_BOT_KEY;
+  const raw = bots[key] || bots[DEFAULT_TODO_QUEUE_BOT_KEY] || {};
+  return {
+    key: raw === bots[key] ? key : DEFAULT_TODO_QUEUE_BOT_KEY,
+    displayName: raw.displayName || "빵빵",
+    discordUserId: raw.discordUserId || DEFAULT_TODO_QUEUE_BOT_USER_ID,
+  };
+}
+
+function normalizeTodoQueueBotKey(botKey) {
+  return resolveTodoQueueBot(botKey).key;
+}
+
+function sanitizeDiscordFilename(name, fallback = "attachment") {
+  const base = path.basename(String(name || fallback)).replace(/[\r\n"\\]/g, "_");
+  return base || fallback;
+}
+
+function discordImageContentType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  return {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".heic": "image/heic",
+  }[ext] || "application/octet-stream";
+}
+
+function splitTodoContentAttachments(content) {
+  const textLines = [];
+  const imagePaths = [];
+  for (const rawLine of String(content || "").split("\n")) {
+    const line = rawLine.trim();
+    if (line.startsWith("/images/")) {
+      const filename = path.basename(line.replace("/images/", ""));
+      if (filename && !filename.includes("..")) imagePaths.push(path.join(__dirname, "images", filename));
+      continue;
+    }
+    if (line) textLines.push(rawLine.trimEnd());
+  }
+  return { text: textLines.join("\n").trim(), imagePaths };
+}
+
+function collectTodoItemDispatchFiles(item) {
+  const { imagePaths } = splitTodoContentAttachments(item.content);
+  const files = [];
+  for (const imagePath of imagePaths) {
+    if (!fs.existsSync(imagePath)) continue;
+    files.push({
+      name: sanitizeDiscordFilename(`${item.id}_${path.basename(imagePath)}`),
+      data: fs.readFileSync(imagePath),
+      contentType: discordImageContentType(imagePath),
+    });
+  }
+  return files;
+}
+
+function truncateForDiscord(text, max = 1100) {
+  const value = String(text || "").trim();
+  if (value.length <= max) return value;
+  return `${value.slice(0, max - 80).trim()}\n\n… [두두 item content가 길어서 Discord dispatch 메시지에서 일부 생략됨]`;
+}
+
+function createDiscordMessageUrl(channelId, messageId) {
+  if (!channelId || !messageId) return null;
+  return `https://discord.com/channels/${GUILD_ID}/${channelId}/${messageId}`;
+}
+
+function createTodoQueueNonce() {
+  return crypto.randomBytes(12).toString("hex");
+}
+
+function buildTodoQueueDispatchPrompt(item, { nonce, targetBot }) {
+  const { text } = splitTodoContentAttachments(item.content);
+  const body = truncateForDiscord(text || "(content 없음)");
+  const attachmentCount = collectTodoItemDispatchFiles(item).length;
+  const marker = [
+    "DUDU_RESULT_V1",
+    "run_id: today-queue",
+    `item_id: ${item.id}`,
+    `nonce: ${nonce}`,
+    "status: ready_for_review",
+    "evidence: <실제로 확인한 명령/파일/스크린샷/결과 요약>",
+  ].join("\n");
+
+  return [
+    `<@${targetBot.discordUserId}>`,
+    "[DUDU_TASK_V1]",
+    `project: ${item.project_emoji || ""} ${item.project_name || item.project_id || ""}`.trim(),
+    item.category_name ? `category: ${item.category_name}` : null,
+    `item_id: ${item.id}`,
+    `nonce: ${nonce}`,
+    `assignee: ${targetBot.displayName} (${targetBot.key})`,
+    `title: ${item.title}`,
+    attachmentCount ? `attachments: ${attachmentCount}` : "attachments: 0",
+    "",
+    "[task_content]",
+    body,
+    "",
+    "[rules]",
+    "- 이 메시지의 item 하나만 처리해.",
+    "- 완료했다고 말만 하지 말고, 실제 변경/검증 결과를 evidence에 적어.",
+    "- 작업이 끝나면 답변 마지막에 아래 marker를 정확히 채워서 보내.",
+    "- marker가 없거나 item_id/nonce가 다르면 두두 큐는 다음 항목으로 진행하지 않는다.",
+    "- done 처리는 하지 않는다. 큐는 ready_for_review marker를 받으면 review까지만 넘긴다.",
+    "",
+    "```text",
+    marker,
+    "```",
+  ].filter(Boolean).join("\n");
+}
+
+function sendDiscordChannelMessage(channelId, { content, files = [], allowedUserIds = [] }, botToken) {
+  return new Promise((resolve, reject) => {
+    if (!botToken) { reject(new Error("Discord bot token not configured")); return; }
+    if (!channelId) { reject(new Error("Discord channel id required")); return; }
+    const payloadJson = {
+      content,
+      allowed_mentions: {
+        users: allowedUserIds.filter(Boolean),
+        replied_user: false,
+      },
+    };
+
+    const finish = (dRes) => {
+      let responseText = "";
+      dRes.on("data", c => responseText += c);
+      dRes.on("end", () => {
+        let parsed = null;
+        try { parsed = responseText ? JSON.parse(responseText) : null; } catch {}
+        if (dRes.statusCode < 200 || dRes.statusCode >= 300) {
+          reject(new Error(`Discord POST ${dRes.statusCode}: ${responseText.slice(0, 300)}`));
+          return;
+        }
+        resolve(parsed || { raw: responseText });
+      });
+    };
+
+    if (!files.length) {
+      const payload = JSON.stringify(payloadJson);
+      const dReq = https.request({
+        hostname: "discord.com",
+        path: `/api/v10/channels/${channelId}/messages`,
+        method: "POST",
+        headers: {
+          "Authorization": `Bot ${botToken}`,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      }, finish);
+      dReq.on("error", reject);
+      dReq.write(payload);
+      dReq.end();
+      return;
+    }
+
+    const boundary = `----DuduDispatch${Date.now()}${Math.random().toString(16).slice(2)}`;
+    const parts = [
+      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(payloadJson)}\r\n`,
+    ];
+    files.forEach((file, i) => {
+      parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="files[${i}]"; filename="${sanitizeDiscordFilename(file.name, `file-${i}`)}"\r\nContent-Type: ${file.contentType || "application/octet-stream"}\r\n\r\n`);
+      parts.push(file.data);
+      parts.push("\r\n");
+    });
+    parts.push(`--${boundary}--\r\n`);
+    const body = Buffer.concat(parts.map(part => typeof part === "string" ? Buffer.from(part) : part));
+    const dReq = https.request({
+      hostname: "discord.com",
+      path: `/api/v10/channels/${channelId}/messages`,
+      method: "POST",
+      headers: {
+        "Authorization": `Bot ${botToken}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length,
+      },
+    }, finish);
+    dReq.on("error", reject);
+    dReq.write(body);
+    dReq.end();
+  });
+}
+
+function recordTodoDispatchFailure(itemId, error) {
+  const message = String(error?.message || error || "dispatch failed").slice(0, 1000);
+  db.prepare("UPDATE items SET dispatch_last_error=? WHERE id=?").run(message, itemId);
+}
+
+async function dispatchTodoItemToDiscord(item, { botKey = DEFAULT_TODO_QUEUE_BOT_KEY } = {}) {
+  const channelId = item.discord_thread_id || item.discord_channel_id;
+  if (!channelId) throw new Error(`item #${item.id} project has no Discord channel/thread mapping`);
+  const botToken = TODAY_QUEUE_DISPATCH_TOKEN;
+  const targetBot = resolveTodoQueueBot(botKey);
+  const nonce = createTodoQueueNonce();
+  const files = collectTodoItemDispatchFiles(item);
+  const content = buildTodoQueueDispatchPrompt(item, { nonce, targetBot });
+  const message = await sendDiscordChannelMessage(channelId, {
+    content,
+    files,
+    allowedUserIds: [targetBot.discordUserId],
+  }, botToken);
+  const messageId = message?.id || null;
+  const messageUrl = createDiscordMessageUrl(channelId, messageId);
+  db.prepare(`
+    UPDATE items
+       SET status='in_progress',
+           dispatch_nonce=?,
+           dispatch_message_id=?,
+           dispatch_channel_id=?,
+           dispatch_message_url=?,
+           dispatch_target_bot_key=?,
+           dispatch_target_bot_user_id=?,
+           dispatch_started_at=datetime('now'),
+           dispatch_attempt_count=COALESCE(dispatch_attempt_count,0)+1,
+           dispatch_last_error=NULL
+     WHERE id=?
+  `).run(nonce, messageId, channelId, messageUrl, targetBot.key, targetBot.discordUserId, item.id);
+  return { item_id: item.id, channel_id: channelId, message_id: messageId, message_url: messageUrl, nonce, target_bot: targetBot.key, target_bot_user_id: targetBot.discordUserId };
+}
+
+const TODAY_QUEUE_ORDER_SQL = `
+  COALESCE(p.sort_order, p.id),
+  CASE WHEN c.id IS NULL THEN 0 ELSE 1 END,
+  COALESCE(c.sort_order, 0),
+  COALESCE(i.sort_order, i.id),
+  i.id
+`;
+
+function todayQueueSelectSql(whereClause) {
+  return `
+    SELECT i.*,
+           p.name as project_name,
+           p.emoji as project_emoji,
+           p.discord_channel_id,
+           p.discord_thread_id,
+           p.default_ai_bot_key as project_default_ai_bot_key,
+           p.sort_order as project_sort_order,
+           c.name as category_name,
+           c.sort_order as category_sort_order
+      FROM items i
+      JOIN projects p ON i.project_id = p.id
+      LEFT JOIN categories c ON i.category_id = c.id
+     WHERE i.is_today=1
+       AND i.owner='AI'
+       ${whereClause || ""}
+     ORDER BY ${TODAY_QUEUE_ORDER_SQL}
+  `;
+}
+
+function getTodayQueueItems(statuses = []) {
+  const normalized = statuses.map(s => String(s || "").trim()).filter(Boolean);
+  if (!normalized.length) return db.prepare(todayQueueSelectSql("")).all();
+  const placeholders = normalized.map(() => "?").join(",");
+  return db.prepare(todayQueueSelectSql(`AND i.status IN (${placeholders})`)).all(...normalized);
+}
+
+function serializeTodayQueueItem(item) {
+  if (!item) return null;
+  return {
+    ...serializeTodoItem(item),
+    project_id: item.project_id,
+    project_name: item.project_name || null,
+    project_emoji: item.project_emoji || null,
+    category_id: item.category_id || null,
+    category_name: item.category_name || null,
+    project_sort_order: item.project_sort_order ?? null,
+    category_sort_order: item.category_sort_order ?? null,
+    default_ai_bot_key: normalizeTodoQueueBotKey(item.project_default_ai_bot_key || DEFAULT_TODO_QUEUE_BOT_KEY),
+    has_discord_target: Boolean(item.discord_thread_id || item.discord_channel_id),
+  };
+}
+
+function buildTodayQueueStatus(extra = {}) {
+  const items = getTodayQueueItems(["todo", "in_progress", "review"]);
+  const counts = { todo: 0, in_progress: 0, review: 0, total: items.length };
+  for (const item of items) {
+    if (counts[item.status] !== undefined) counts[item.status] += 1;
+  }
+  const active = items.filter(i => i.status === "in_progress");
+  const next = items.find(i => i.status === "todo") || null;
+  return {
+    running: active.length > 0,
+    counts,
+    active: active.map(serializeTodayQueueItem),
+    next: serializeTodayQueueItem(next),
+    items: items.map(serializeTodayQueueItem),
+    ...extra,
+  };
+}
+
+async function dispatchNextTodayQueueItem({ botKey = null, allowWhenRunning = false } = {}) {
+  const active = getTodayQueueItems(["in_progress"]);
+  if (active.length && !allowWhenRunning) {
+    return {
+      started: false,
+      reason: "already_running",
+      active: active.map(serializeTodayQueueItem),
+      status: buildTodayQueueStatus(),
+    };
+  }
+
+  const next = getTodayQueueItems(["todo"])[0] || null;
+  if (!next) {
+    return {
+      started: false,
+      reason: "empty",
+      status: buildTodayQueueStatus(),
+    };
+  }
+
+  if (!next.discord_thread_id && !next.discord_channel_id) {
+    const reason = `item #${next.id} project has no Discord channel/thread mapping`;
+    recordTodoDispatchFailure(next.id, reason);
+    return {
+      started: false,
+      reason: "missing_discord_target",
+      item: serializeTodayQueueItem(next),
+      status: buildTodayQueueStatus(),
+    };
+  }
+
+  try {
+    const dispatchBotKey = normalizeOptionalText(botKey) || next.project_default_ai_bot_key || DEFAULT_TODO_QUEUE_BOT_KEY;
+    const dispatch = await dispatchTodoItemToDiscord(next, { botKey: dispatchBotKey });
+    return {
+      started: true,
+      reason: "dispatched",
+      dispatch,
+      item: serializeTodayQueueItem(db.prepare(todayQueueSelectSql("AND i.id=?")).get(next.id)),
+      status: buildTodayQueueStatus(),
+    };
+  } catch (error) {
+    recordTodoDispatchFailure(next.id, error);
+    return {
+      started: false,
+      reason: "dispatch_failed",
+      error: String(error?.message || error),
+      item: serializeTodayQueueItem(next),
+      status: buildTodayQueueStatus(),
+    };
+  }
+}
+
+function stopTodayQueue() {
+  const active = getTodayQueueItems(["in_progress"]);
+  const stopMessage = "today queue stopped";
+  const stmt = db.prepare(`
+    UPDATE items
+       SET status='todo',
+           dispatch_nonce=NULL,
+           dispatch_started_at=NULL,
+           dispatch_last_error=?
+     WHERE id=?
+  `);
+  for (const item of active) stmt.run(stopMessage, item.id);
+  return {
+    stopped: active.length,
+    items: active.map(serializeTodayQueueItem),
+    status: buildTodayQueueStatus(),
+  };
+}
+
+function getTodayQueueItemById(itemId) {
+  return db.prepare(todayQueueSelectSql("AND i.id=?")).get(itemId) || null;
+}
+
+function markerStatusIsReadyForReview(status) {
+  return String(status || "").trim().toLowerCase() === "ready_for_review";
+}
+
+function markerRunIdIsTodayQueue(runId) {
+  return String(runId || "").trim().toLowerCase() === "today-queue";
+}
+
+function messageChannelMatchesDispatch(msg, item) {
+  if (!item.dispatch_channel_id) return false;
+  if (msg.channelId === item.dispatch_channel_id) return true;
+  if (msg.channel?.id === item.dispatch_channel_id) return true;
+  if (msg.channel?.parentId === item.dispatch_channel_id) return true;
+  return false;
+}
+
+async function handleTodayQueueResultMarkerMessage(msg, marker) {
+  const ignore = (reason, extra = {}) => ({ accepted: false, reason, ...extra });
+
+  if (!msg?.author?.bot) return ignore("author_not_bot");
+  if (!markerRunIdIsTodayQueue(marker.run_id)) return ignore("run_id_mismatch");
+  if (!markerStatusIsReadyForReview(marker.status)) return ignore("status_not_ready_for_review");
+  if (!Number.isInteger(marker.item_id)) return ignore("item_id_missing");
+  if (!marker.nonce) return ignore("nonce_missing");
+
+  const item = getTodayQueueItemById(marker.item_id);
+  if (!item) return ignore("item_not_found", { item_id: marker.item_id });
+  if (msg.id && item.dispatch_message_id && msg.id === item.dispatch_message_id) return ignore("dispatch_prompt_message");
+  if (item.status !== "in_progress") return ignore("item_not_in_progress", { item_id: item.id, status: item.status });
+  if (item.owner !== "AI" || !item.is_today) return ignore("item_not_active_today_ai", { item_id: item.id });
+  if (!item.dispatch_nonce || item.dispatch_nonce !== marker.nonce) return ignore("nonce_mismatch", { item_id: item.id });
+  if (!item.dispatch_target_bot_user_id) return ignore("expected_bot_missing", { item_id: item.id });
+  if (item.dispatch_target_bot_user_id !== msg.author.id) {
+    return ignore("author_mismatch", { item_id: item.id, expected_author_id: item.dispatch_target_bot_user_id, actual_author_id: msg.author.id });
+  }
+  if (!messageChannelMatchesDispatch(msg, item)) {
+    return ignore("channel_mismatch", { item_id: item.id, expected_channel_id: item.dispatch_channel_id, actual_channel_id: msg.channelId });
+  }
+
+  const updated = db.prepare(`
+    UPDATE items
+       SET status='review',
+           review_count=COALESCE(review_count,0)+1,
+           review_emoji='👀',
+           updated_at=datetime('now'),
+           dispatch_last_error=NULL
+     WHERE id=?
+       AND status='in_progress'
+       AND dispatch_nonce=?
+  `).run(item.id, marker.nonce);
+
+  if (updated.changes !== 1) return ignore("duplicate_or_stale", { item_id: item.id });
+
+  broadcastSSE("today-queue", { action: "result", itemId: item.id, messageId: msg.id, authorId: msg.author.id });
+  broadcastSSE("items-changed", { action: "today-queue-result", itemId: item.id });
+
+  const next = await dispatchNextTodayQueueItem();
+  broadcastSSE("today-queue", {
+    action: "next-after-result",
+    previousItemId: item.id,
+    started: next.started,
+    reason: next.reason,
+    itemId: next.dispatch?.item_id || next.item?.id || null,
+  });
+  if (next.started || next.reason === "missing_discord_target" || next.reason === "dispatch_failed") {
+    broadcastSSE("items-changed", { action: "today-queue-next", reason: next.reason, itemId: next.dispatch?.item_id || next.item?.id || null });
+  }
+
+  return { accepted: true, item_id: item.id, next };
+}
+
+function startTodayQueueBridge() {
+  if (!TODAY_QUEUE_BRIDGE_ENABLED) {
+    console.log("[today-queue-bridge] disabled by TODAY_QUEUE_BRIDGE_ENABLED=false");
+    return;
+  }
+
+  try {
+    require("./today-queue-bridge").start({
+      token: TODAY_QUEUE_BRIDGE_TOKEN,
+      onResult: handleTodayQueueResultMarkerMessage,
+    });
+  } catch (error) {
+    console.error("[today-queue-bridge] failed to start:", error?.message || error);
+  }
 }
 
 // --- SSE (Server-Sent Events) ---
@@ -1833,6 +2320,30 @@ const server = http.createServer(async (req, res) => {
       const codexQuota = await getOpenClawCodexQuota();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ codexQuota, timestamp: new Date().toISOString() }));
+
+    // --- Today Task Queue API ---
+    } else if (url.pathname === "/api/today-queue/status" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(buildTodayQueueStatus()));
+
+    } else if ((url.pathname === "/api/today-queue/start" || url.pathname === "/api/today-queue/next") && req.method === "POST") {
+      const body = await parseBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const requestedBotKey = normalizeOptionalText(payload.bot_key || payload.target_bot_key);
+      const result = await dispatchNextTodayQueueItem({ botKey: requestedBotKey || null });
+      broadcastSSE("today-queue", { action: url.pathname.endsWith("/start") ? "start" : "next", started: result.started, reason: result.reason, itemId: result.dispatch?.item_id || result.item?.id || null });
+      if (result.started || result.reason === "missing_discord_target" || result.reason === "dispatch_failed") {
+        broadcastSSE("items-changed", { action: "today-queue", reason: result.reason });
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+
+    } else if (url.pathname === "/api/today-queue/stop" && req.method === "POST") {
+      const result = stopTodayQueue();
+      broadcastSSE("today-queue", { action: "stop", stopped: result.stopped });
+      if (result.stopped > 0) broadcastSSE("items-changed", { action: "today-queue-stop" });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
 
     // --- Cron Jobs API ---
     } else if (url.pathname === "/cron-jobs" && req.method === "GET") {
@@ -2043,6 +2554,7 @@ const server = http.createServer(async (req, res) => {
           color: p.color || null,
           discord_channel_id: p.discord_channel_id || null,
           discord_thread_id: p.discord_thread_id || null,
+          default_ai_bot_key: normalizeTodoQueueBotKey(p.default_ai_bot_key || DEFAULT_TODO_QUEUE_BOT_KEY),
           items: projItems
             .filter(i => i.category_id === null)
             .map(serializeTodoItem),
@@ -2062,14 +2574,15 @@ const server = http.createServer(async (req, res) => {
     // POST /api/projects — 프로젝트 생성
     } else if (url.pathname === "/api/projects" && req.method === "POST") {
       const body = await parseBody(req);
-      const { emoji, name } = JSON.parse(body);
+      const { emoji, name, default_ai_bot_key } = JSON.parse(body);
       if (!name) { sendError(res, 400, "name required"); return; }
+      const botKey = normalizeTodoQueueBotKey(default_ai_bot_key || DEFAULT_TODO_QUEUE_BOT_KEY);
 
       const row = db.prepare(
-        `INSERT INTO projects (name, emoji, sort_order)
-         VALUES (?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
+        `INSERT INTO projects (name, emoji, default_ai_bot_key, sort_order)
+         VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM projects))
          RETURNING *`
-      ).get(name, emoji || '📌');
+      ).get(name, emoji || '📌', botKey);
       broadcastSSE("project-created", { id: row.id });
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
@@ -2081,8 +2594,11 @@ const server = http.createServer(async (req, res) => {
       const updates = JSON.parse(body);
       const fields = [];
       const values = [];
-      for (const key of ["emoji", "name", "status", "color", "discord_channel_id", "discord_thread_id"]) {
-        if (updates[key] !== undefined) { fields.push(`${key}=?`); values.push(updates[key]); }
+      for (const key of ["emoji", "name", "status", "color", "discord_channel_id", "discord_thread_id", "default_ai_bot_key"]) {
+        if (updates[key] !== undefined) {
+          fields.push(`${key}=?`);
+          values.push(key === "default_ai_bot_key" ? normalizeTodoQueueBotKey(updates[key]) : updates[key]);
+        }
       }
       if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
       values.push(id);
@@ -2281,127 +2797,61 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: "File not found" }));
       }
 
-    // POST /api/assign — 빵빵한테 시키기
+    // POST /api/assign — AI에게 item 단위 작업 지시서 dispatch
     } else if (url.pathname === "/api/assign" && req.method === "POST") {
       const body = await parseBody(req);
-      const { item_ids } = JSON.parse(body);
+      const payload = JSON.parse(body || "{}");
+      const { item_ids } = payload;
       if (!item_ids || !item_ids.length) { sendError(res, 400, "item_ids required"); return; }
 
-      const items = item_ids.map(id => db.prepare("SELECT i.*, p.name as project_name, p.emoji as project_emoji, p.discord_channel_id, p.discord_thread_id FROM items i JOIN projects p ON i.project_id = p.id WHERE i.id=?").get(id)).filter(i => i && i.status !== 'review' && i.status !== 'done');
+      const botKey = normalizeOptionalText(payload.bot_key || payload.target_bot_key) || DEFAULT_TODO_QUEUE_BOT_KEY;
+      const itemStmt = db.prepare(`
+        SELECT i.*,
+               p.name as project_name,
+               p.emoji as project_emoji,
+               p.discord_channel_id,
+               p.discord_thread_id,
+               c.name as category_name
+          FROM items i
+          JOIN projects p ON i.project_id = p.id
+          LEFT JOIN categories c ON i.category_id = c.id
+         WHERE i.id=?
+      `);
+      const items = item_ids
+        .map(id => itemStmt.get(id))
+        .filter(i => i && i.status !== 'review' && i.status !== 'done' && i.status !== 'archived');
 
-      // 프로젝트별 그루핑
-      const grouped = {};
+      const assigned = [];
+      const failed = [];
+      const skipped = [];
       for (const item of items) {
-        const key = item.project_name;
-        if (!grouped[key]) grouped[key] = { emoji: item.project_emoji, channelId: item.discord_channel_id, threadId: item.discord_thread_id, items: [] };
-        grouped[key].items.push(item);
-      }
-
-      // Discord 팡팡 봇으로 각 채널에 메시지 전송 (빵빵 봇은 자기 메시지 무시하므로 팡팡으로 전송)
-      const botToken = process.env.DISCORD_PANG_TOKEN || process.env.DISCORD_BOT_TOKEN;
-      if (botToken) {
-        const sendDiscord = (channelId, content, files = []) => new Promise((resolve, reject) => {
-          if (files.length === 0) {
-            const payload = JSON.stringify({ content });
-            const dReq = https.request({
-              hostname: "discord.com", path: `/api/v10/channels/${channelId}/messages`, method: "POST",
-              headers: { "Authorization": `Bot ${botToken}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
-            }, (dRes) => { let d = ""; dRes.on("data", c => d += c); dRes.on("end", () => resolve(d)); });
-            dReq.on("error", reject);
-            dReq.write(payload);
-            dReq.end();
-            return;
-          }
-          // multipart/form-data with files
-          const boundary = `----FormBoundary${Date.now()}`;
-          const parts = [];
-          // payload_json part
-          parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ content })}\r\n`);
-          // file parts
-          files.forEach((file, i) => {
-            parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="files[${i}]"; filename="${file.name}"\r\nContent-Type: ${file.contentType || "image/jpeg"}\r\n\r\n`);
-            parts.push(file.data);
-            parts.push(`\r\n`);
-          });
-          parts.push(`--${boundary}--\r\n`);
-          const bodyParts = parts.map(p => typeof p === "string" ? Buffer.from(p) : p);
-          const body = Buffer.concat(bodyParts);
-          const dReq = https.request({
-            hostname: "discord.com", path: `/api/v10/channels/${channelId}/messages`, method: "POST",
-            headers: { "Authorization": `Bot ${botToken}`, "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length }
-          }, (dRes) => { let d = ""; dRes.on("data", c => d += c); dRes.on("end", () => resolve(d)); });
-          dReq.on("error", reject);
-          dReq.write(body);
-          dReq.end();
-        });
-
-        for (const [proj, data] of Object.entries(grouped)) {
-          const targetChannel = data.threadId || data.channelId;
-          if (!targetChannel) continue; // Discord 채널 매핑 없으면 스킵
-          const send = async (text, files = []) => {
-            if (targetChannel) {
-              try { await sendDiscord(targetChannel, text.trim(), files); } catch (e) { console.error(`[assign] discord send error:`, e.message); }
-            } else {
-              const webhookUrl = process.env.DISCORD_WEBHOOK_DINGDONG;
-              if (webhookUrl) {
-                try {
-                  await new Promise((resolve, reject) => {
-                    const whUrl = new URL(webhookUrl);
-                    const payload = JSON.stringify({ content: text.trim() });
-                    const whReq = https.request({ hostname: whUrl.hostname, path: whUrl.pathname + whUrl.search, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } }, (whRes) => { let d = ""; whRes.on("data", c => d += c); whRes.on("end", () => resolve(d)); });
-                    whReq.on("error", reject);
-                    whReq.write(payload);
-                    whReq.end();
-                  });
-                } catch (e) { console.error("[assign] webhook error:", e.message); }
-              }
-            }
-          };
-
-          const files = [];
-          const lines = [
-            `📋 할일빵빵에서 형주가 시켰어`,
-            `프로젝트: ${proj}`,
-            `items:`
-          ];
-
-          for (const item of data.items) {
-            lines.push(`- #${item.id} ${item.title}`);
-            if (item.content) {
-              const textLines = item.content.split('\n')
-                .filter(l => !l.trim().startsWith('/images/'))
-                .map(l => l.trim())
-                .filter(Boolean);
-              for (const line of textLines) lines.push(`  ${line}`);
-            }
-
-            if (item.content) {
-              const imgPaths = item.content.split('\n').filter(l => l.trim().startsWith('/images/'));
-              if (imgPaths.length > 0) lines.push(`  📎 첨부파일 ${imgPaths.length}개`);
-              for (const imgLine of imgPaths) {
-                const imgFile = path.join(__dirname, "images", imgLine.trim().replace('/images/', ''));
-                if (fs.existsSync(imgFile)) {
-                  files.push({ name: `${item.id}_${path.basename(imgFile)}`, data: fs.readFileSync(imgFile), contentType: "image/jpeg" });
-                }
-              }
-            }
-          }
-
-          lines.push('');
-          lines.push('할일빵빵에서 확인하고 작업해. 못 하겠으면 ❓, 형주가 할 거면 🙋 이모지로 리뷰 마킹해.');
-          lines.push('<@1471495923400970377>');
-
-          await send(lines.join('\n'), files);
+        if (!item.discord_thread_id && !item.discord_channel_id) {
+          const reason = `item #${item.id} project has no Discord channel/thread mapping`;
+          recordTodoDispatchFailure(item.id, reason);
+          skipped.push({ item_id: item.id, reason });
+          continue;
+        }
+        try {
+          assigned.push(await dispatchTodoItemToDiscord(item, { botKey }));
+        } catch (e) {
+          console.error(`[assign] dispatch error item #${item.id}:`, e.message);
+          recordTodoDispatchFailure(item.id, e);
+          failed.push({ item_id: item.id, error: e.message });
         }
       }
 
-      // 채널 매핑 있는 아이템만 in_progress로
-      const assignedIds = items.filter(i => i.discord_channel_id || i.discord_thread_id).map(i => i.id);
-      const stmt = db.prepare("UPDATE items SET status='in_progress' WHERE id=?");
-      for (const id of assignedIds) stmt.run(id);
       broadcastSSE("items-changed", { action: "assign" });
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ assigned: assignedIds.length, requested: item_ids.length, eligible: items.length }));
+      res.end(JSON.stringify({
+        assigned: assigned.length,
+        requested: item_ids.length,
+        eligible: items.length,
+        failed: failed.length,
+        skipped: skipped.length,
+        dispatches: assigned,
+        errors: failed,
+        skips: skipped,
+      }));
 
     // POST /api/assign-self — 형주한테 시키기 (자기 리마인드)
     } else if (url.pathname === "/api/assign-self" && req.method === "POST") {
@@ -2689,6 +3139,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`✅ Usage API server running on port ${PORT}`);
 });
+
+// Today Queue bridge — DUDU_RESULT_V1 marker 감지 → review 전환 → next dispatch
+startTodayQueueBridge();
 
 // Voice bridge — bb-private [voice] 메시지 감지 → 빵빵 답변 Ably publish
 try {
