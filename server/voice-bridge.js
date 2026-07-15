@@ -941,6 +941,24 @@ async function handleFaceRegisterIntent(text, imageUrl, ablyChannel, mentionKey)
   return true;
 }
 
+function isProgressDraft(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return false;
+
+  const firstLine = lines[0].replace(/[*_`#]/g, "").trim();
+  if (/^(working|thinking|searching|checking|reading|running|analyzing)[.!…]*$/i.test(firstLine)) {
+    return true;
+  }
+
+  return lines.some((line) => {
+    const withoutPrefix = line.replace(/^[^\p{L}\p{N}]*/u, "");
+    return /^(read|write|edit|exec|bash|web search|search|fetch|browser|memory search|image|process)\s*:/i.test(withoutPrefix);
+  });
+}
+
 function cleanForVoice(text) {
   return normalizeSquareBracketsForTTS(text || "")
     // URL은 TTS에서 글자단위로 읽혀서 캐릭터 낭비됨. 호스트만 남기고 "링크"로 축약.
@@ -995,6 +1013,7 @@ function start() {
   let armTimer = null;
   let selfId = null;
   let responseBuffer = null;
+  const progressMessageIds = new Set();
 
   function disarmResponse(reason) {
     awaitingResponse = false;
@@ -1003,6 +1022,7 @@ function start() {
     if (armTimer) clearTimeout(armTimer);
     armTimer = null;
     responseBuffer?.clear();
+    progressMessageIds.clear();
     if (reason) console.log(`[voice-bridge] ${reason} — disarmed`);
   }
 
@@ -1011,6 +1031,7 @@ function start() {
     currentRequestId = requestId || null;
     currentTarget = target || null;
     responseBuffer?.clear();
+    progressMessageIds.clear();
     if (armTimer) clearTimeout(armTimer);
     armTimer = setTimeout(() => {
       disarmResponse("timeout");
@@ -1106,6 +1127,7 @@ function start() {
 
   function queueBotResponse(message, bot) {
     awaitingResponse = false;
+    progressMessageIds.clear();
     if (armTimer) clearTimeout(armTimer);
     armTimer = null;
     responseBuffer.start({
@@ -1141,11 +1163,17 @@ function start() {
       return;
     }
 
+    if (isProgressDraft(msg.content)) {
+      progressMessageIds.add(msg.id);
+      console.log(`[voice-bridge] ignored progress draft ${msg.id}; waiting for final response`);
+      return;
+    }
+
     queueBotResponse(msg, bot);
   });
 
   client.on(Events.MessageUpdate, async (_oldMsg, updatedMsg) => {
-    if (!responseBuffer.has(updatedMsg.id)) return;
+    if (!responseBuffer.has(updatedMsg.id) && !progressMessageIds.has(updatedMsg.id)) return;
 
     let message = updatedMsg;
     if (message.partial) {
@@ -1157,8 +1185,23 @@ function start() {
       }
     }
 
+    if (progressMessageIds.has(message.id)) {
+      if (isProgressDraft(message.content)) return;
+
+      const { byDiscordId, byKey } = readBotsConfig();
+      const bot = resolveConfiguredBotFromAuthor(message.author, message.member, byDiscordId, byKey);
+      if (!bot) return;
+      queueBotResponse(message, bot);
+      console.log(`[voice-bridge] progress message ${message.id} became final; buffering latest edit`);
+      return;
+    }
+
     responseBuffer.update(message.id, { message, wasEdited: true });
     console.log(`[voice-bridge] streaming update ${message.id}; settle timer reset`);
+  });
+
+  client.on(Events.MessageDelete, (message) => {
+    progressMessageIds.delete(message.id);
   });
 
   try {
@@ -1177,6 +1220,7 @@ if (require.main === module) {
 module.exports = {
   start,
   cleanForVoice,
+  isProgressDraft,
   createSettledMessageBuffer,
   normalizeLocation,
   distanceMeters,

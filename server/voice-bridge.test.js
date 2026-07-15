@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createSettledMessageBuffer } = require("./voice-bridge");
+const { createSettledMessageBuffer, isProgressDraft } = require("./voice-bridge");
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const value = (id, content, extra = {}) => ({
@@ -82,4 +82,13 @@ test("clear cancels a pending message", async () => {
   await wait(20);
 
   assert.deepEqual(settled, []);
+});
+
+
+test("detects OpenClaw progress drafts without rejecting final answers", () => {
+  assert.equal(isProgressDraft("Working.\n🔎 Read: from ~/.openclaw/workspace/skills/todo/SKILL.md"), true);
+  assert.equal(isProgressDraft("두두를 확인할게.\n🛠️ Bash: run todo lookup"), true);
+  assert.equal(isProgressDraft("I reviewed your task list and added both items."), false);
+  assert.equal(isProgressDraft("[cheerfully] 좋아, 두 항목 모두 등록했어."), false);
+  assert.equal(isProgressDraft("완료했어.\n-# 🛠️ 2 tool calls · ⏱️ 12s"), false);
 });
