@@ -1,14 +1,19 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createSettledMessageBuffer, isProgressDraft } = require("./voice-bridge");
+const {
+  buildVoiceRequestText,
+  createSettledMessageBuffer,
+  createVoiceFinalMarker,
+  extractMarkedVoiceFinal,
+  findVoiceFinalMarker,
+} = require("./voice-bridge");
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const value = (id, content, extra = {}) => ({
   message: { id, content },
   bot: { key: "bbangbbang" },
   requestId: "request-1",
-  wasEdited: false,
   ...extra,
 });
 
@@ -38,7 +43,6 @@ test("message updates reset settling and keep the latest draft", async () => {
   await wait(10);
   assert.equal(buffer.update("1", {
     message: { id: "1", content: "latest" },
-    wasEdited: true,
   }), true);
   await wait(15);
   assert.equal(settled.length, 0);
@@ -46,7 +50,6 @@ test("message updates reset settling and keep the latest draft", async () => {
 
   assert.equal(settled.length, 1);
   assert.equal(settled[0].message.content, "latest");
-  assert.equal(settled[0].wasEdited, true);
 });
 
 test("a new final message replaces an in-flight progress draft", async () => {
@@ -59,7 +62,6 @@ test("a new final message replaces an in-flight progress draft", async () => {
   buffer.start(value("progress", "working"));
   buffer.update("progress", {
     message: { id: "progress", content: "still working" },
-    wasEdited: true,
   });
   await wait(5);
   buffer.start(value("final", "complete"));
@@ -67,7 +69,6 @@ test("a new final message replaces an in-flight progress draft", async () => {
 
   assert.equal(settled.length, 1);
   assert.equal(settled[0].message.id, "final");
-  assert.equal(settled[0].wasEdited, false);
 });
 
 test("clear cancels a pending message", async () => {
@@ -85,10 +86,20 @@ test("clear cancels a pending message", async () => {
 });
 
 
-test("detects OpenClaw progress drafts without rejecting final answers", () => {
-  assert.equal(isProgressDraft("Working.\n🔎 Read: from ~/.openclaw/workspace/skills/todo/SKILL.md"), true);
-  assert.equal(isProgressDraft("두두를 확인할게.\n🛠️ Bash: run todo lookup"), true);
-  assert.equal(isProgressDraft("I reviewed your task list and added both items."), false);
-  assert.equal(isProgressDraft("[cheerfully] 좋아, 두 항목 모두 등록했어."), false);
-  assert.equal(isProgressDraft("완료했어.\n-# 🛠️ 2 tool calls · ⏱️ 12s"), false);
+
+test("creates, finds, and strips a request-specific final marker", () => {
+  const marker = createVoiceFinalMarker();
+  assert.match(marker, /^\(BBVOICE_FINAL:[A-F0-9]{8}\)$/);
+  assert.equal(findVoiceFinalMarker(`prompt ${marker}`), marker);
+  assert.equal(extractMarkedVoiceFinal(`${marker} [calm] 최종 답변이야.`, marker), "[calm] 최종 답변이야.");
+  assert.equal(extractMarkedVoiceFinal("Working. Read: todo skill", marker), null);
+});
+
+test("adds the exact final marker instruction only when requested", async () => {
+  const marker = "(BBVOICE_FINAL:12AB34CD)";
+  const marked = await buildVoiceRequestText("테스트", { finalMarker: marker });
+  const unmarked = await buildVoiceRequestText("테스트");
+
+  assert.equal(marked.includes(`Start only the final answer with this exact marker: ${marker}`), true);
+  assert.equal(unmarked.includes("BBVOICE_FINAL"), false);
 });

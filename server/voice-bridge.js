@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, Events } = require("discord.js");
 const Ably = require("ably");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 
@@ -393,7 +394,21 @@ function readWeatherLabel() {
   }
 }
 
-async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
+function createVoiceFinalMarker() {
+  return `(BBVOICE_FINAL:${crypto.randomBytes(4).toString("hex").toUpperCase()})`;
+}
+
+function findVoiceFinalMarker(text) {
+  return String(text || "").match(/\(BBVOICE_FINAL:[A-F0-9]{8}\)/)?.[0] || null;
+}
+
+function extractMarkedVoiceFinal(text, marker) {
+  const value = String(text || "");
+  if (!marker || !value.includes(marker)) return null;
+  return value.replace(marker, "").trim();
+}
+
+async function buildVoiceRequestText(userText, { location, faceContext, finalMarker } = {}) {
   const locationLabel = await resolveLocationLabel(location);
   const hasLocation = Boolean(locationLabel);
   const hasPhoto = Boolean(faceContext);
@@ -405,6 +420,10 @@ async function buildVoiceRequestText(userText, { location, faceContext } = {}) {
     "Use English words when natural. If filenames, commands, or URLs would sound awkward, explain them briefly instead.",
     "Use location, time, and photo context only when it helps the conversation. Do not describe metadata directly.",
   ];
+  if (finalMarker) {
+    voiceBullets.push(`Start only the final answer with this exact marker: ${finalMarker}`);
+    voiceBullets.push("Keep the marker unchanged. Never include it in progress updates or commentary.");
+  }
 
   const timeLabel = buildTimeLabel();
   const holidayLabel = buildHolidayLabel();
@@ -941,24 +960,6 @@ async function handleFaceRegisterIntent(text, imageUrl, ablyChannel, mentionKey)
   return true;
 }
 
-function isProgressDraft(text) {
-  const lines = String(text || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (!lines.length) return false;
-
-  const firstLine = lines[0].replace(/[*_`#]/g, "").trim();
-  if (/^(working|thinking|searching|checking|reading|running|analyzing)[.!…]*$/i.test(firstLine)) {
-    return true;
-  }
-
-  return lines.some((line) => {
-    const withoutPrefix = line.replace(/^[^\p{L}\p{N}]*/u, "");
-    return /^(read|write|edit|exec|bash|web search|search|fetch|browser|memory search|image|process)\s*:/i.test(withoutPrefix);
-  });
-}
-
 function cleanForVoice(text) {
   return normalizeSquareBracketsForTTS(text || "")
     // URL은 TTS에서 글자단위로 읽혀서 캐릭터 낭비됨. 호스트만 남기고 "링크"로 축약.
@@ -1000,6 +1001,7 @@ function start() {
   const ablyChannel = ably.channels.get(ABLY_CHANNEL);
   let currentRequestId = null;
   let currentTarget = null;
+  let currentFinalMarker = null;
 
   const client = new Client({
     intents: [
@@ -1013,25 +1015,24 @@ function start() {
   let armTimer = null;
   let selfId = null;
   let responseBuffer = null;
-  const progressMessageIds = new Set();
 
   function disarmResponse(reason) {
     awaitingResponse = false;
     currentRequestId = null;
     currentTarget = null;
+    currentFinalMarker = null;
     if (armTimer) clearTimeout(armTimer);
     armTimer = null;
     responseBuffer?.clear();
-    progressMessageIds.clear();
     if (reason) console.log(`[voice-bridge] ${reason} — disarmed`);
   }
 
-  function armResponse(requestId, target) {
+  function armResponse(requestId, target, finalMarker) {
     awaitingResponse = true;
     currentRequestId = requestId || null;
     currentTarget = target || null;
+    currentFinalMarker = finalMarker || null;
     responseBuffer?.clear();
-    progressMessageIds.clear();
     if (armTimer) clearTimeout(armTimer);
     armTimer = setTimeout(() => {
       disarmResponse("timeout");
@@ -1048,6 +1049,7 @@ function start() {
     if (!text || typeof text !== "string") return;
     currentRequestId = typeof data === "object" && typeof data.request_id === "string" ? data.request_id : null;
     currentTarget = normalizeVoiceTarget(data);
+    currentFinalMarker = createVoiceFinalMarker();
     try {
       const trimmed = text.trim();
       // Registration is intentionally NOT handled inside voice requests.
@@ -1056,14 +1058,18 @@ function start() {
       const location = typeof data === "object" ? data.location : null;
       console.log(`[voice-bridge] request location: ${summarizeLocationForLog(location)}`);
       const faceContext = imageUrl ? await buildFaceMemoryContext(imageUrl) : "";
-      const textWithContext = await buildVoiceRequestText(trimmed, { location, faceContext });
+      const textWithContext = await buildVoiceRequestText(trimmed, {
+        location,
+        faceContext,
+        finalMarker: currentFinalMarker,
+      });
       console.log(`[voice-bridge] request context: ${summarizeVoiceContextForLog(textWithContext)}`);
       const postedViaClient = await postViaDiscordClient(client, textWithContext, imageUrl, mention, currentTarget);
       if (!postedViaClient) {
         await postViaWebhook(textWithContext, imageUrl, mention);
         currentTarget = webhookVoiceTarget();
       }
-      armResponse(currentRequestId, currentTarget);
+      armResponse(currentRequestId, currentTarget, currentFinalMarker);
       console.log(`[voice-bridge] forwarded to Discord target=${voiceTargetLabel(currentTarget)}:`, trimmed.slice(0, 80), imageUrl ? "with image" : "");
     } catch (e) {
       disarmResponse("post error");
@@ -1080,16 +1086,10 @@ function start() {
     console.log(`[voice-bridge] BB user id = ${BB_USER_ID || "(any bot)"}`);
   });
 
-  async function publishResponse({ message, bot, requestId, wasEdited }) {
-    if (wasEdited) {
-      armResponse(requestId, currentTarget);
-      console.log(`[voice-bridge] ignored edited progress draft ${message.id}; waiting for final response`);
-      return;
-    }
-
+  async function publishResponse({ message, bot, requestId }) {
     const cleaned = cleanForVoice(message.content);
     if (!cleaned) {
-      armResponse(requestId, currentTarget);
+      armResponse(requestId, currentTarget, currentFinalMarker);
       console.log("[voice-bridge] empty after cleaning, waiting for final response");
       return;
     }
@@ -1112,10 +1112,12 @@ function start() {
       await ablyChannel.publish("reply", replyPayload);
       currentRequestId = null;
       currentTarget = null;
+      currentFinalMarker = null;
       console.log(`[voice-bridge] published from ${bot.displayName}(${bot.key}):`, cleaned.slice(0, 80));
     } catch (e) {
       currentRequestId = null;
       currentTarget = null;
+      currentFinalMarker = null;
       console.error("[voice-bridge] ably publish error", e);
     }
   }
@@ -1127,16 +1129,35 @@ function start() {
 
   function queueBotResponse(message, bot) {
     awaitingResponse = false;
-    progressMessageIds.clear();
     if (armTimer) clearTimeout(armTimer);
     armTimer = null;
     responseBuffer.start({
       message,
       bot,
       requestId: currentRequestId,
-      wasEdited: false,
     });
     console.log(`[voice-bridge] buffering response ${message.id} for streaming settle`);
+  }
+
+  function resolveMarkedBotMessage(message) {
+    const finalText = extractMarkedVoiceFinal(message.content, currentFinalMarker);
+    if (finalText === null) return null;
+
+    const { byDiscordId, byKey } = readBotsConfig();
+    const bot = resolveConfiguredBotFromAuthor(message.author, message.member, byDiscordId, byKey);
+    if (!bot) {
+      console.log(`[voice-bridge] ignored bot msg from ${message.author.tag} (${message.author.id}) — not in bots config`);
+      return null;
+    }
+
+    return {
+      bot,
+      message: {
+        id: message.id,
+        content: finalText,
+        author: message.author,
+      },
+    };
   }
 
   client.on(Events.MessageCreate, async (msg) => {
@@ -1145,35 +1166,26 @@ function start() {
 
     // Discord 직접 사진 face 처리 + 무멘션 followup relay는 relay-bridge가 담당.
 
-    // User or webhook [voice] → arm (webhook은 author.bot=true지만 msg.webhookId 있음)
+    // User or webhook [voice] → arm. 메시지 본문 marker를 읽어 재시작 뒤에도 복구 가능하게 한다.
     const isUserOrWebhook = !msg.author.bot || msg.webhookId != null;
     if (isUserOrWebhook && msg.content.trim().toLowerCase().startsWith("[voice]")) {
-      armResponse(currentRequestId, messageVoiceTarget(msg));
+      armResponse(currentRequestId, messageVoiceTarget(msg), findVoiceFinalMarker(msg.content));
       return;
     }
 
-    // progress streaming은 수정되는 임시 메시지 뒤에 최종 메시지가 따로 온다.
-    // pending 중 새 봇 메시지가 오면 임시 메시지를 버리고 최종 후보로 교체한다.
     if ((!awaitingResponse && !responseBuffer.has()) || !msg.author.bot) return;
-
-    const { byDiscordId, byKey } = readBotsConfig();
-    const bot = resolveConfiguredBotFromAuthor(msg.author, msg.member, byDiscordId, byKey);
-    if (!bot) {
-      console.log(`[voice-bridge] ignored bot msg from ${msg.author.tag} (${msg.author.id}) — not in bots config`);
+    const marked = resolveMarkedBotMessage(msg);
+    if (!marked) {
+      console.log(`[voice-bridge] ignored unmarked bot message ${msg.id}; waiting for ${currentFinalMarker || "final marker"}`);
       return;
     }
 
-    if (isProgressDraft(msg.content)) {
-      progressMessageIds.add(msg.id);
-      console.log(`[voice-bridge] ignored progress draft ${msg.id}; waiting for final response`);
-      return;
-    }
-
-    queueBotResponse(msg, bot);
+    queueBotResponse(marked.message, marked.bot);
   });
 
   client.on(Events.MessageUpdate, async (_oldMsg, updatedMsg) => {
-    if (!responseBuffer.has(updatedMsg.id) && !progressMessageIds.has(updatedMsg.id)) return;
+    if ((!awaitingResponse && !responseBuffer.has(updatedMsg.id)) || !updatedMsg.author?.bot) return;
+    if (!isWatchedVoiceChannel(updatedMsg) && !isCurrentVoiceTarget(updatedMsg, currentTarget)) return;
 
     let message = updatedMsg;
     if (message.partial) {
@@ -1185,23 +1197,17 @@ function start() {
       }
     }
 
-    if (progressMessageIds.has(message.id)) {
-      if (isProgressDraft(message.content)) return;
+    const marked = resolveMarkedBotMessage(message);
+    if (!marked) return;
 
-      const { byDiscordId, byKey } = readBotsConfig();
-      const bot = resolveConfiguredBotFromAuthor(message.author, message.member, byDiscordId, byKey);
-      if (!bot) return;
-      queueBotResponse(message, bot);
-      console.log(`[voice-bridge] progress message ${message.id} became final; buffering latest edit`);
+    if (responseBuffer.has(message.id)) {
+      responseBuffer.update(message.id, { message: marked.message });
+      console.log(`[voice-bridge] marked final update ${message.id}; settle timer reset`);
       return;
     }
 
-    responseBuffer.update(message.id, { message, wasEdited: true });
-    console.log(`[voice-bridge] streaming update ${message.id}; settle timer reset`);
-  });
-
-  client.on(Events.MessageDelete, (message) => {
-    progressMessageIds.delete(message.id);
+    queueBotResponse(marked.message, marked.bot);
+    console.log(`[voice-bridge] unmarked draft ${message.id} became marked final`);
   });
 
   try {
@@ -1220,7 +1226,9 @@ if (require.main === module) {
 module.exports = {
   start,
   cleanForVoice,
-  isProgressDraft,
+  createVoiceFinalMarker,
+  findVoiceFinalMarker,
+  extractMarkedVoiceFinal,
   createSettledMessageBuffer,
   normalizeLocation,
   distanceMeters,
