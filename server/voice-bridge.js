@@ -40,6 +40,7 @@ const FACE_CLI_PATH = process.env.FACE_CLI_PATH || path.join(process.env.HOME ||
 const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD || 0.4);
 const DISCORD_IMAGE_DIR = path.join(__dirname, "images", "discord-face");
 const DEFAULT_TIMEOUT_MS = 90_000;
+const DEFAULT_STREAM_SETTLE_MS = 2_000;
 
 const IMAGE_MIME_TYPES = {
   ".jpg": "image/jpeg",
@@ -109,6 +110,53 @@ function readTimeoutMs() {
   const cfg = readConfig();
   const v = Number(cfg.bridgeTimeoutMs);
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_TIMEOUT_MS;
+}
+
+function readStreamSettleMs() {
+  const cfg = readConfig();
+  const v = Number(cfg.bridgeStreamSettleMs);
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_STREAM_SETTLE_MS;
+}
+
+function createSettledMessageBuffer({ delayMs, onSettle }) {
+  let pending = null;
+  let timer = null;
+
+  function clear() {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    pending = null;
+  }
+
+  function schedule() {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const value = pending;
+      timer = null;
+      pending = null;
+      if (value) await onSettle(value);
+    }, delayMs);
+  }
+
+  function start(value) {
+    clear();
+    pending = value;
+    schedule();
+  }
+
+  function update(messageId, patch) {
+    if (!pending || pending.message.id !== messageId) return false;
+    pending = { ...pending, ...patch };
+    schedule();
+    return true;
+  }
+
+  return {
+    start,
+    update,
+    clear,
+    has: (messageId) => Boolean(pending && (!messageId || pending.message.id === messageId)),
+  };
 }
 
 let placesCache = { expiresAt: 0, places: [] };
@@ -946,6 +994,7 @@ function start() {
   let awaitingResponse = false;
   let armTimer = null;
   let selfId = null;
+  let responseBuffer = null;
 
   function disarmResponse(reason) {
     awaitingResponse = false;
@@ -953,6 +1002,7 @@ function start() {
     currentTarget = null;
     if (armTimer) clearTimeout(armTimer);
     armTimer = null;
+    responseBuffer?.clear();
     if (reason) console.log(`[voice-bridge] ${reason} — disarmed`);
   }
 
@@ -960,6 +1010,7 @@ function start() {
     awaitingResponse = true;
     currentRequestId = requestId || null;
     currentTarget = target || null;
+    responseBuffer?.clear();
     if (armTimer) clearTimeout(armTimer);
     armTimer = setTimeout(() => {
       disarmResponse("timeout");
@@ -1008,6 +1059,64 @@ function start() {
     console.log(`[voice-bridge] BB user id = ${BB_USER_ID || "(any bot)"}`);
   });
 
+  async function publishResponse({ message, bot, requestId, wasEdited }) {
+    if (wasEdited) {
+      armResponse(requestId, currentTarget);
+      console.log(`[voice-bridge] ignored edited progress draft ${message.id}; waiting for final response`);
+      return;
+    }
+
+    const cleaned = cleanForVoice(message.content);
+    if (!cleaned) {
+      armResponse(requestId, currentTarget);
+      console.log("[voice-bridge] empty after cleaning, waiting for final response");
+      return;
+    }
+
+    try {
+      const replyPayload = {
+        text: cleaned,
+        author_id: message.author.id,
+        author_tag: message.author.tag,
+        message_id: message.id,
+        ts: Date.now(),
+        speaker: bot.key,
+        speaker_name: bot.displayName,
+        speaker_color: bot.color,
+        voice_id: bot.voiceId,
+      };
+      if (requestId) replyPayload.request_id = requestId;
+      if (bot.ttsModel) replyPayload.tts_model = bot.ttsModel;
+      if (bot.voiceSettings) replyPayload.voice_settings = bot.voiceSettings;
+      await ablyChannel.publish("reply", replyPayload);
+      currentRequestId = null;
+      currentTarget = null;
+      console.log(`[voice-bridge] published from ${bot.displayName}(${bot.key}):`, cleaned.slice(0, 80));
+    } catch (e) {
+      currentRequestId = null;
+      currentTarget = null;
+      console.error("[voice-bridge] ably publish error", e);
+    }
+  }
+
+  responseBuffer = createSettledMessageBuffer({
+    delayMs: readStreamSettleMs(),
+    onSettle: publishResponse,
+  });
+
+  function queueBotResponse(message, bot) {
+    awaitingResponse = false;
+    if (armTimer) clearTimeout(armTimer);
+    armTimer = null;
+    responseBuffer.start({
+      message,
+      bot,
+      requestId: currentRequestId,
+      wasEdited: false,
+    });
+    console.log(`[voice-bridge] buffering response ${message.id} for streaming settle`);
+  }
+
   client.on(Events.MessageCreate, async (msg) => {
     if (!isWatchedVoiceChannel(msg) && !isCurrentVoiceTarget(msg, currentTarget)) return;
     if (msg.author.id === selfId) return;
@@ -1021,9 +1130,9 @@ function start() {
       return;
     }
 
-    // 봇 response → publish & disarm. 멀티봇: voice-config.json의 bots 매핑에 등록된 봇만 허용.
-    if (!awaitingResponse) return;
-    if (!msg.author.bot) return;
+    // progress streaming은 수정되는 임시 메시지 뒤에 최종 메시지가 따로 온다.
+    // pending 중 새 봇 메시지가 오면 임시 메시지를 버리고 최종 후보로 교체한다.
+    if ((!awaitingResponse && !responseBuffer.has()) || !msg.author.bot) return;
 
     const { byDiscordId, byKey } = readBotsConfig();
     const bot = resolveConfiguredBotFromAuthor(msg.author, msg.member, byDiscordId, byKey);
@@ -1032,40 +1141,24 @@ function start() {
       return;
     }
 
-    const cleaned = cleanForVoice(msg.content);
-    if (!cleaned) {
-      console.log("[voice-bridge] empty after cleaning, skip");
-      return;
+    queueBotResponse(msg, bot);
+  });
+
+  client.on(Events.MessageUpdate, async (_oldMsg, updatedMsg) => {
+    if (!responseBuffer.has(updatedMsg.id)) return;
+
+    let message = updatedMsg;
+    if (message.partial) {
+      try {
+        message = await message.fetch();
+      } catch (e) {
+        console.error(`[voice-bridge] failed to fetch updated message ${updatedMsg.id}:`, e.message);
+        return;
+      }
     }
 
-    awaitingResponse = false;
-    if (armTimer) clearTimeout(armTimer);
-    armTimer = null;
-
-    try {
-      const replyPayload = {
-        text: cleaned,
-        author_id: msg.author.id,
-        author_tag: msg.author.tag,
-        message_id: msg.id,
-        ts: Date.now(),
-        speaker: bot.key,
-        speaker_name: bot.displayName,
-        speaker_color: bot.color,
-        voice_id: bot.voiceId,
-      };
-      if (currentRequestId) replyPayload.request_id = currentRequestId;
-      if (bot.ttsModel) replyPayload.tts_model = bot.ttsModel;
-      if (bot.voiceSettings) replyPayload.voice_settings = bot.voiceSettings;
-      await ablyChannel.publish("reply", replyPayload);
-      currentRequestId = null;
-      currentTarget = null;
-      console.log(`[voice-bridge] published from ${bot.displayName}(${bot.key}):`, cleaned.slice(0, 80));
-    } catch (e) {
-      currentRequestId = null;
-      currentTarget = null;
-      console.error("[voice-bridge] ably publish error", e);
-    }
+    responseBuffer.update(message.id, { message, wasEdited: true });
+    console.log(`[voice-bridge] streaming update ${message.id}; settle timer reset`);
   });
 
   try {
@@ -1084,6 +1177,7 @@ if (require.main === module) {
 module.exports = {
   start,
   cleanForVoice,
+  createSettledMessageBuffer,
   normalizeLocation,
   distanceMeters,
   resolveLocationLabel,
