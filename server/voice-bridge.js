@@ -403,9 +403,9 @@ function findVoiceFinalMarker(text) {
 }
 
 function extractMarkedVoiceFinal(text, marker) {
-  const value = String(text || "");
-  if (!marker || !value.includes(marker)) return null;
-  return value.replace(marker, "").trim();
+  const value = String(text || "").trimEnd();
+  if (!marker || !value.endsWith(marker)) return null;
+  return value.slice(0, -marker.length).trim();
 }
 
 async function buildVoiceRequestText(userText, { location, faceContext, finalMarker } = {}) {
@@ -421,8 +421,8 @@ async function buildVoiceRequestText(userText, { location, faceContext, finalMar
     "Use location, time, and photo context only when it helps the conversation. Do not describe metadata directly.",
   ];
   if (finalMarker) {
-    voiceBullets.push(`Start only the final answer with this exact marker: ${finalMarker}`);
-    voiceBullets.push("Keep the marker unchanged. Never include it in progress updates or commentary.");
+    voiceBullets.push(`End only the final answer with this exact marker: ${finalMarker}`);
+    voiceBullets.push("Keep the marker unchanged and make it the final characters. Never include it in progress updates or commentary.");
   }
 
   const timeLabel = buildTimeLabel();

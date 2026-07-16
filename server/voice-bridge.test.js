@@ -91,7 +91,9 @@ test("creates, finds, and strips a request-specific final marker", () => {
   const marker = createVoiceFinalMarker();
   assert.match(marker, /^\(BBVOICE_FINAL:[A-F0-9]{8}\)$/);
   assert.equal(findVoiceFinalMarker(`prompt ${marker}`), marker);
-  assert.equal(extractMarkedVoiceFinal(`${marker} [calm] 최종 답변이야.`, marker), "[calm] 최종 답변이야.");
+  assert.equal(extractMarkedVoiceFinal(`[calm] 최종 답변이야. ${marker}`, marker), "[calm] 최종 답변이야.");
+  assert.equal(extractMarkedVoiceFinal(`${marker} 아직 작성 중이야.`, marker), null);
+  assert.equal(extractMarkedVoiceFinal(`중간에 ${marker} 있지만 아직 작성 중이야.`, marker), null);
   assert.equal(extractMarkedVoiceFinal("Working. Read: todo skill", marker), null);
 });
 
@@ -100,6 +102,7 @@ test("adds the exact final marker instruction only when requested", async () => 
   const marked = await buildVoiceRequestText("테스트", { finalMarker: marker });
   const unmarked = await buildVoiceRequestText("테스트");
 
-  assert.equal(marked.includes(`Start only the final answer with this exact marker: ${marker}`), true);
+  assert.equal(marked.includes(`End only the final answer with this exact marker: ${marker}`), true);
+  assert.equal(marked.includes("make it the final characters"), true);
   assert.equal(unmarked.includes("BBVOICE_FINAL"), false);
 });
