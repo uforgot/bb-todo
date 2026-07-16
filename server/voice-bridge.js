@@ -1200,14 +1200,13 @@ function start() {
     const marked = resolveMarkedBotMessage(message);
     if (!marked) return;
 
-    if (responseBuffer.has(message.id)) {
-      responseBuffer.update(message.id, { message: marked.message });
-      console.log(`[voice-bridge] marked final update ${message.id}; settle timer reset`);
+    if (!responseBuffer.has(message.id)) {
+      console.log(`[voice-bridge] ignored marker added by progress edit ${message.id}; waiting for final MessageCreate`);
       return;
     }
 
-    queueBotResponse(marked.message, marked.bot);
-    console.log(`[voice-bridge] unmarked draft ${message.id} became marked final`);
+    responseBuffer.update(message.id, { message: marked.message });
+    console.log(`[voice-bridge] marked final update ${message.id}; settle timer reset`);
   });
 
   try {
