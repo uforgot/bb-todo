@@ -402,10 +402,26 @@ function findVoiceFinalMarker(text) {
   return String(text || "").match(/\(BBVOICE_FINAL:[A-F0-9]{8}\)/)?.[0] || null;
 }
 
+function isOpenClawFinalFooter(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.length > 0
+    && lines.every((line) => line.startsWith("-# "))
+    && lines.some((line) => /(?:tool calls?|tokens?|⏱️)/i.test(line));
+}
+
 function extractMarkedVoiceFinal(text, marker) {
   const value = String(text || "").trimEnd();
-  if (!marker || !value.endsWith(marker)) return null;
-  return value.slice(0, -marker.length).trim();
+  if (!marker) return null;
+
+  const markerIndex = value.lastIndexOf(marker);
+  if (markerIndex < 0) return null;
+
+  const trailing = value.slice(markerIndex + marker.length).trim();
+  if (trailing && !isOpenClawFinalFooter(trailing)) return null;
+  return value.slice(0, markerIndex).trim();
 }
 
 async function buildVoiceRequestText(userText, { location, faceContext, finalMarker } = {}) {
@@ -1228,6 +1244,7 @@ module.exports = {
   createVoiceFinalMarker,
   findVoiceFinalMarker,
   extractMarkedVoiceFinal,
+  isOpenClawFinalFooter,
   createSettledMessageBuffer,
   normalizeLocation,
   distanceMeters,

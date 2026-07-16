@@ -7,6 +7,7 @@ const {
   createVoiceFinalMarker,
   extractMarkedVoiceFinal,
   findVoiceFinalMarker,
+  isOpenClawFinalFooter,
 } = require("./voice-bridge");
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -92,6 +93,10 @@ test("creates, finds, and strips a request-specific final marker", () => {
   assert.match(marker, /^\(BBVOICE_FINAL:[A-F0-9]{8}\)$/);
   assert.equal(findVoiceFinalMarker(`prompt ${marker}`), marker);
   assert.equal(extractMarkedVoiceFinal(`[calm] 최종 답변이야. ${marker}`, marker), "[calm] 최종 답변이야.");
+  assert.equal(
+    extractMarkedVoiceFinal(`[calm] 완료했어. ${marker}\n-# 🛠️ 6 tool calls · ⏱️ 54s`, marker),
+    "[calm] 완료했어.",
+  );
   assert.equal(extractMarkedVoiceFinal(`${marker} 아직 작성 중이야.`, marker), null);
   assert.equal(extractMarkedVoiceFinal(`중간에 ${marker} 있지만 아직 작성 중이야.`, marker), null);
   assert.equal(extractMarkedVoiceFinal("Working. Read: todo skill", marker), null);
@@ -105,4 +110,12 @@ test("adds the exact final marker instruction only when requested", async () => 
   assert.equal(marked.includes(`End only the final answer with this exact marker: ${marker}`), true);
   assert.equal(marked.includes("make it the final characters"), true);
   assert.equal(unmarked.includes("BBVOICE_FINAL"), false);
+});
+
+
+test("accepts only OpenClaw final footers after the marker", () => {
+  assert.equal(isOpenClawFinalFooter("-# 🛠️ 1 tool call · ⏱️ 8s"), true);
+  assert.equal(isOpenClawFinalFooter("-# 1.2k tokens · $0.01"), true);
+  assert.equal(isOpenClawFinalFooter("ordinary text"), false);
+  assert.equal(isOpenClawFinalFooter("-# arbitrary text"), false);
 });
