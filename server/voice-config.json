@@ -76,8 +76,8 @@
   //   eleven_flash_v2_5    — 가장 빠름, 표현력은 낮음
   "ttsModel": "eleven_v3",
 
-  // STT 모델 (ElevenLabs Scribe). 현재 한국어 지원되는 건 scribe_v1.
-  "sttModel": "scribe_v1",
+  // STT 모델 (ElevenLabs Scribe). 긴 녹음과 한영 혼용에 강한 Batch v2 사용.
+  "sttModel": "scribe_v2",
 
   // 합성 톤 미세조정.
   "voiceSettings": {
