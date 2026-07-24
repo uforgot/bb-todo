@@ -14,6 +14,7 @@ const THRESHOLD = 80;
 export function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const startYRef = useRef(0);
   const pullingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -22,6 +23,7 @@ export function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
     if (window.scrollY === 0) {
       startYRef.current = e.touches[0].clientY;
       pullingRef.current = true;
+      setPulling(true);
     }
   }, []);
 
@@ -44,6 +46,7 @@ export function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
   const handleTouchEnd = useCallback(async () => {
     if (!pullingRef.current) return;
     pullingRef.current = false;
+    setPulling(false);
 
     if (pullDistance >= THRESHOLD && !refreshing) {
       setRefreshing(true);
@@ -72,7 +75,7 @@ export function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
         className="flex items-center justify-center overflow-hidden transition-[height] duration-200"
         style={{
           height: pullDistance > 0 ? `${pullDistance}px` : 0,
-          transitionDuration: pullingRef.current ? "0ms" : "200ms",
+          transitionDuration: pulling ? "0ms" : "200ms",
         }}
       >
         <RefreshCw
