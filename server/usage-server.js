@@ -17,8 +17,12 @@ const plist = require("simple-plist");
 const fs = require("fs");
 const crypto = require("crypto");
 const zlib = require("zlib");
+const { Readable, Transform } = require("stream");
+const { pipeline } = require("stream/promises");
 const Database = require("better-sqlite3");
 const sharp = require("sharp");
+const { scanDependencies } = require("./dependency-scanner");
+const { createMeetingSummaryGenerator } = require("./meeting-summary");
 
 const PORT = process.env.USAGE_PORT || 3100;
 const API_KEY = process.env.USAGE_API_KEY;
@@ -40,6 +44,8 @@ const REVIEW_FIGMA_IMAGES_DIR = process.env.REVIEW_FIGMA_IMAGES_DIR || path.join
 const REVIEW_ATTACHMENTS_PUBLIC_PATH = normalizePublicPath(process.env.REVIEW_ATTACHMENTS_PUBLIC_PATH || "/review-attachments");
 const REVIEW_ATTACHMENTS_DIR = process.env.REVIEW_ATTACHMENTS_DIR || path.join(__dirname, "images", "review-attachments");
 const REVIEW_ATTACHMENTS_MAX_BYTES = parseInt(process.env.REVIEW_ATTACHMENTS_MAX_BYTES || String(20 * 1024 * 1024), 10);
+const MEETING_ARCHIVE_DIR = process.env.MEETING_ARCHIVE_DIR || path.join(os.homedir(), "Documents", "MeetingArchive");
+const MEETING_UPLOAD_MAX_BYTES = parseInt(process.env.MEETING_UPLOAD_MAX_BYTES || String(512 * 1024 * 1024), 10);
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
 const DEFAULT_TODO_QUEUE_BOT_KEY = process.env.TODO_QUEUE_BOT_KEY || "bbangbbang";
 const DEFAULT_TODO_QUEUE_BOT_USER_ID = process.env.TODO_QUEUE_BOT_USER_ID || process.env.BBANGBBANG_USER_ID || "1471495923400970377";
@@ -114,7 +120,85 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now')),
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS meetings (
+    id TEXT PRIMARY KEY,
+    record_number INTEGER,
+    recorded_at TEXT NOT NULL,
+    recorded_date TEXT NOT NULL,
+    title TEXT,
+    transcript TEXT,
+    speaker_names_json TEXT,
+    audio_path TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    duration_seconds REAL,
+    sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_meetings_recorded_at ON meetings(recorded_at DESC);
 `);
+
+// Migration: meeting transcription jobs
+try { db.exec("ALTER TABLE meetings ADD COLUMN record_number INTEGER"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_status TEXT DEFAULT 'idle'"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_attempts INTEGER DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_error TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_model TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_id TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_language TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_language_probability REAL"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_duration_seconds REAL"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_words_json TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_segments_json TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_options_json TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN transcription_updated_at TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN speaker_names_json TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN audio_deleted_at TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN summary TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN title_source TEXT DEFAULT 'default'"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN summary_status TEXT DEFAULT 'idle'"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN summary_model TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN summary_error TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN summary_updated_at TEXT"); } catch {}
+try {
+  db.exec(`
+    UPDATE meetings
+       SET title_source=CASE
+         WHEN title IS NOT NULL AND trim(title)<>'' THEN 'user'
+         ELSE 'default'
+       END
+     WHERE title_source IS NULL OR title_source NOT IN ('default','ai','user');
+    UPDATE meetings
+       SET summary_status='failed',
+           summary_error='서버 재시작으로 요약 작업이 중단됐어.',
+           summary_updated_at=datetime('now')
+     WHERE summary_status IN ('queued','processing');
+  `);
+} catch {}
+try {
+  const missingRecordNumbers = db.prepare(`
+    SELECT id FROM meetings
+     WHERE record_number IS NULL
+     ORDER BY recorded_at ASC, created_at ASC, id ASC
+  `).all();
+  const firstRecordNumber = db.prepare("SELECT COALESCE(MAX(record_number), 0) + 1 AS value FROM meetings").get().value;
+  const assignRecordNumbers = db.transaction(rows => {
+    const update = db.prepare("UPDATE meetings SET record_number=? WHERE id=?");
+    rows.forEach((row, index) => update.run(firstRecordNumber + index, row.id));
+  });
+  assignRecordNumbers(missingRecordNumbers);
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_record_number ON meetings(record_number)");
+  db.exec(`
+    UPDATE meetings
+       SET transcription_status='failed',
+           transcription_error='서버 재시작으로 전사 작업이 중단됐어. 다시 처리가 필요해.',
+           transcription_updated_at=datetime('now')
+     WHERE transcription_status IN ('queued','processing');
+  `);
+} catch {}
 
 // Migration: review_count
 try { db.exec("ALTER TABLE items ADD COLUMN review_count INTEGER DEFAULT 0"); } catch {}
@@ -2239,10 +2323,571 @@ setInterval(() => {
   }
 }, 30000);
 
+function normalizeMeetingId(value) {
+  const id = String(value || "").trim();
+  return /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,127}$/.test(id) ? id : null;
+}
+
+function normalizeMeetingDate(value, recordedAt) {
+  const date = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+  return new Date(recordedAt).toISOString().slice(0, 10);
+}
+
+function createMeetingAudioUrl(req, meetingId) {
+  const protocol = req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http");
+  const host = req.headers["x-forwarded-host"] || req.headers.host || `localhost:${PORT}`;
+  return `${String(protocol).split(",")[0]}://${String(host).split(",")[0]}/api/meetings/${encodeURIComponent(meetingId)}/audio`;
+}
+
+function parseMeetingJSON(value, fallback = []) {
+  try {
+    const parsed = JSON.parse(value || "");
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeMeetingSpeakerNames(value, fallback = {}) {
+  if (value == null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw Object.assign(new Error("speaker_names must be an object"), { statusCode: 400 });
+  }
+  const names = {};
+  for (const [speakerId, rawName] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(speakerId)) continue;
+    const name = normalizeOptionalText(rawName);
+    if (name) names[speakerId] = name.slice(0, 40);
+  }
+  return names;
+}
+
+function serializeMeeting(req, row) {
+  const words = parseMeetingJSON(row.transcription_words_json);
+  const segments = parseMeetingJSON(row.transcription_segments_json);
+  const audioFilePath = getMeetingArchivePath(row.audio_path);
+  const audioAvailable = !row.audio_deleted_at && Boolean(audioFilePath && fs.existsSync(audioFilePath));
+  return {
+    id: row.id,
+    record_number: row.record_number,
+    recorded_at: row.recorded_at,
+    recorded_date: row.recorded_date,
+    title: row.title || null,
+    title_source: row.title_source || "default",
+    summary: row.summary || null,
+    transcript: row.transcript,
+    speaker_names: parseMeetingJSON(row.speaker_names_json, {}),
+    audio_path: row.audio_path,
+    audio_url: audioAvailable ? createMeetingAudioUrl(req, row.id) : null,
+    audio_available: audioAvailable,
+    audio_deleted_at: row.audio_deleted_at || null,
+    original_filename: row.original_filename,
+    mime_type: row.mime_type,
+    size_bytes: row.size_bytes,
+    duration_seconds: row.duration_seconds,
+    sha256: row.sha256,
+    transcription: {
+      status: row.transcription_status || "idle",
+      attempts: row.transcription_attempts || 0,
+      error: row.transcription_error || null,
+      model: row.transcription_model || null,
+      transcription_id: row.transcription_id || null,
+      language_code: row.transcription_language || null,
+      language_probability: row.transcription_language_probability ?? null,
+      audio_duration_seconds: row.transcription_duration_seconds ?? null,
+      speakers: [...new Set(segments.map(segment => segment.speaker_id).filter(Boolean))],
+      options: parseMeetingJSON(row.transcription_options_json, {}),
+      words,
+      segments,
+      updated_at: row.transcription_updated_at || null,
+    },
+    summary_generation: {
+      status: row.summary_status || "idle",
+      model: row.summary_model || null,
+      error: row.summary_error || null,
+      updated_at: row.summary_updated_at || null,
+    },
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function getMeetingArchivePath(relativePath) {
+  const root = path.resolve(MEETING_ARCHIVE_DIR);
+  const resolved = path.resolve(root, String(relativePath || ""));
+  if (!resolved.startsWith(`${root}${path.sep}`)) return null;
+  return resolved;
+}
+
+async function receiveMeetingAudio(req, meetingId) {
+  const contentLength = Number(req.headers["content-length"] || 0);
+  if (contentLength > MEETING_UPLOAD_MAX_BYTES) {
+    throw Object.assign(new Error("meeting audio is too large"), { statusCode: 413 });
+  }
+
+  const existing = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+  const recordedAtHeader = String(req.headers["x-recorded-at"] || "").trim();
+  const recordedAtDate = recordedAtHeader ? new Date(recordedAtHeader) : new Date();
+  if (!Number.isFinite(recordedAtDate.getTime())) {
+    throw Object.assign(new Error("X-Recorded-At must be an ISO date"), { statusCode: 400 });
+  }
+
+  const recordedAt = existing?.recorded_at || recordedAtDate.toISOString();
+  const recordedDate = existing?.recorded_date || normalizeMeetingDate(req.headers["x-recorded-date"], recordedAt);
+  const [year, month, day] = recordedDate.split("-");
+  const requestedName = path.basename(String(req.headers["x-original-filename"] || "meeting.m4a"));
+  const requestedExtension = path.extname(requestedName).slice(1).toLowerCase();
+  const extension = /^[a-z0-9]{1,8}$/.test(requestedExtension) ? requestedExtension : "m4a";
+  const relativePath = existing?.audio_path || path.posix.join(year, month, day, meetingId, `original.${extension}`);
+  const filePath = getMeetingArchivePath(relativePath);
+  if (!filePath) throw Object.assign(new Error("invalid meeting archive path"), { statusCode: 400 });
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.upload-${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
+  const hash = crypto.createHash("sha256");
+  let sizeBytes = 0;
+  const counter = new Transform({
+    transform(chunk, encoding, callback) {
+      sizeBytes += chunk.length;
+      if (sizeBytes > MEETING_UPLOAD_MAX_BYTES) {
+        callback(Object.assign(new Error("meeting audio is too large"), { statusCode: 413 }));
+        return;
+      }
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+
+  try {
+    await pipeline(req, counter, fs.createWriteStream(tempPath, { flags: "wx" }));
+    if (sizeBytes === 0) throw Object.assign(new Error("meeting audio is empty"), { statusCode: 400 });
+    await fs.promises.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+
+  const durationHeader = Number(req.headers["x-duration-seconds"]);
+  const durationSeconds = Number.isFinite(durationHeader) && durationHeader >= 0 ? durationHeader : null;
+  const mimeType = normalizeAttachmentMimeType(req.headers["content-type"] || "audio/mp4");
+  const sha256 = hash.digest("hex");
+  const recordNumber = existing?.record_number
+    || db.prepare("SELECT COALESCE(MAX(record_number), 0) + 1 AS value FROM meetings").get().value;
+  db.prepare(`
+    INSERT INTO meetings (
+      id, record_number, recorded_at, recorded_date, audio_path, original_filename,
+      mime_type, size_bytes, duration_seconds, sha256, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      audio_path=excluded.audio_path,
+      original_filename=excluded.original_filename,
+      mime_type=excluded.mime_type,
+      size_bytes=excluded.size_bytes,
+      duration_seconds=excluded.duration_seconds,
+      sha256=excluded.sha256,
+      audio_deleted_at=NULL,
+      transcription_status='idle',
+      transcription_error=NULL,
+      transcription_id=NULL,
+      transcription_language=NULL,
+      transcription_language_probability=NULL,
+      transcription_duration_seconds=NULL,
+      transcription_words_json=NULL,
+      transcription_segments_json=NULL,
+      transcript=NULL,
+      speaker_names_json=NULL,
+      summary=NULL,
+      summary_status='idle',
+      summary_model=NULL,
+      summary_error=NULL,
+      summary_updated_at=NULL,
+      updated_at=datetime('now')
+  `).run(
+    meetingId,
+    recordNumber,
+    recordedAt,
+    recordedDate,
+    relativePath,
+    requestedName,
+    mimeType,
+    sizeBytes,
+    durationSeconds,
+    sha256
+  );
+
+  return db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+}
+
+function sendMeetingAudio(req, res, row) {
+  const filePath = getMeetingArchivePath(row.audio_path);
+  if (row.audio_deleted_at || !filePath || !fs.existsSync(filePath)) {
+    sendError(res, 404, "meeting audio not found");
+    return;
+  }
+
+  const stat = fs.statSync(filePath);
+  const range = String(req.headers.range || "").match(/^bytes=(\d*)-(\d*)$/);
+  const headers = {
+    "Content-Type": row.mime_type || "audio/mp4",
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "private, no-store",
+    "Content-Disposition": `inline; filename="${path.basename(row.original_filename).replace(/[\r\n\"]/g, "_")}"`,
+  };
+
+  if (range) {
+    const start = range[1] ? Number(range[1]) : 0;
+    const end = range[2] ? Math.min(Number(range[2]), stat.size - 1) : stat.size - 1;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start > end || start >= stat.size) {
+      res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
+      res.end();
+      return;
+    }
+    res.writeHead(206, {
+      ...headers,
+      "Content-Length": end - start + 1,
+      "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+    });
+    fs.createReadStream(filePath, { start, end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, { ...headers, "Content-Length": stat.size });
+  fs.createReadStream(filePath).pipe(res);
+}
+
+const activeMeetingTranscriptions = new Set();
+
+function getMeetingTranscriptionModel() {
+  if (/^scribe_v[12]$/.test(process.env.MEETING_TRANSCRIPTION_MODEL || "")) {
+    return process.env.MEETING_TRANSCRIPTION_MODEL;
+  }
+  try {
+    const config = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, "utf8"));
+    if (/^scribe_v[12]$/.test(config.sttModel || "")) return config.sttModel;
+  } catch {}
+  return "scribe_v1";
+}
+
+function normalizeTranscriptionOptions(value = {}, fallback = {}) {
+  const input = value && typeof value === "object" ? value : {};
+  const model = /^scribe_v[12]$/.test(input.model_id || "")
+    ? input.model_id
+    : (/^scribe_v[12]$/.test(fallback.model_id || "") ? fallback.model_id : getMeetingTranscriptionModel());
+  const language = String(input.language_code ?? fallback.language_code ?? process.env.MEETING_TRANSCRIPTION_LANGUAGE ?? "").trim();
+  const speakerCount = Number(input.num_speakers ?? fallback.num_speakers);
+  return {
+    model_id: model,
+    ...(language && /^[a-zA-Z]{2,3}$/.test(language) ? { language_code: language.toLowerCase() } : {}),
+    ...(Number.isInteger(speakerCount) && speakerCount >= 1 && speakerCount <= 32 ? { num_speakers: speakerCount } : {}),
+    diarize: true,
+    timestamps_granularity: "word",
+    tag_audio_events: true,
+  };
+}
+
+function createMultipartField(boundary, name, value) {
+  return Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    "utf8"
+  );
+}
+
+async function callScribeForMeeting(row, options) {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
+  const filePath = getMeetingArchivePath(row.audio_path);
+  if (!filePath || !fs.existsSync(filePath)) throw new Error("meeting audio not found");
+
+  const stat = await fs.promises.stat(filePath);
+  const boundary = `bbmeeting-${crypto.randomBytes(18).toString("hex")}`;
+  const fields = [
+    createMultipartField(boundary, "model_id", options.model_id),
+    createMultipartField(boundary, "diarize", "true"),
+    createMultipartField(boundary, "timestamps_granularity", "word"),
+    createMultipartField(boundary, "tag_audio_events", "true"),
+  ];
+  if (options.language_code) fields.push(createMultipartField(boundary, "language_code", options.language_code));
+  if (options.num_speakers) fields.push(createMultipartField(boundary, "num_speakers", String(options.num_speakers)));
+
+  const safeFilename = path.basename(row.original_filename || "meeting.m4a").replace(/[\r\n\"]/g, "_");
+  const fileHeader = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${safeFilename}"\r\nContent-Type: ${row.mime_type || "audio/mp4"}\r\n\r\n`,
+    "utf8"
+  );
+  const closing = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+  const contentLength = fields.reduce((total, field) => total + field.length, 0) + fileHeader.length + stat.size + closing.length;
+  const body = Readable.from((async function* streamMultipart() {
+    for (const field of fields) yield field;
+    yield fileHeader;
+    for await (const chunk of fs.createReadStream(filePath)) yield chunk;
+    yield closing;
+  })());
+
+  const timeoutMs = Math.max(60_000, Number(process.env.MEETING_TRANSCRIPTION_TIMEOUT_MS) || 2 * 60 * 60 * 1000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error("Scribe transcription timed out")), timeoutMs);
+  try {
+    const response = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": String(contentLength),
+      },
+      body,
+      duplex: "half",
+      signal: controller.signal,
+    });
+    const responseText = await response.text();
+    let payload;
+    try { payload = JSON.parse(responseText); } catch { payload = null; }
+    if (!response.ok) {
+      const detail = payload?.detail?.message || payload?.detail || payload?.message || responseText || `HTTP ${response.status}`;
+      throw new Error(`Scribe ${response.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+    }
+    if (!payload || !Array.isArray(payload.words)) throw new Error("Scribe response did not include words");
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeScribeWords(words) {
+  return words.map((word, index) => ({
+    index,
+    text: String(word?.text || ""),
+    start: Number.isFinite(Number(word?.start)) ? Number(word.start) : null,
+    end: Number.isFinite(Number(word?.end)) ? Number(word.end) : null,
+    type: ["word", "spacing", "audio_event"].includes(word?.type) ? word.type : "word",
+    speaker_id: normalizeOptionalText(word?.speaker_id) || null,
+    logprob: Number.isFinite(Number(word?.logprob)) ? Number(word.logprob) : null,
+  }));
+}
+
+function buildSpeakerSegments(words) {
+  const segments = [];
+  let current = null;
+  const flush = () => {
+    if (!current) return;
+    current.text = current.text.trim();
+    if (current.text) segments.push(current);
+    current = null;
+  };
+
+  for (const word of words) {
+    const speakerId = word.speaker_id || current?.speaker_id || "speaker_unknown";
+    if (!current || (word.type !== "spacing" && speakerId !== current.speaker_id)) {
+      flush();
+      current = {
+        speaker_id: speakerId,
+        start: word.start,
+        end: word.end,
+        text: "",
+        word_start_index: word.index,
+        word_end_index: word.index,
+      };
+    }
+    current.text += word.text;
+    if (current.start == null && word.start != null) current.start = word.start;
+    if (word.end != null) current.end = word.end;
+    current.word_end_index = word.index;
+  }
+  flush();
+  return segments;
+}
+
+const activeMeetingSummaries = new Set();
+
+function getMeetingSummaryModel() {
+  return process.env.MEETING_SUMMARY_MODEL || "anthropic/claude-sonnet-5";
+}
+
+async function processMeetingSummary(meetingId) {
+  if (activeMeetingSummaries.has(meetingId)) return;
+  activeMeetingSummaries.add(meetingId);
+  const model = getMeetingSummaryModel();
+  try {
+    let row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+    if (!row) throw new Error("meeting not found");
+    if (row.transcription_status !== "completed" || !String(row.transcript || "").trim()) {
+      throw new Error("completed meeting transcript is required");
+    }
+    db.prepare(`
+      UPDATE meetings
+         SET summary_status='processing',
+             summary_model=?,
+             summary_error=NULL,
+             summary_updated_at=datetime('now'),
+             updated_at=datetime('now')
+       WHERE id=?
+    `).run(model, meetingId);
+
+    const generator = createMeetingSummaryGenerator({
+      apiKey: OPENROUTER_API_KEY,
+      apiUrl: process.env.MEETING_SUMMARY_API_URL,
+      model,
+      timeoutMs: Math.max(30_000, Number(process.env.MEETING_SUMMARY_TIMEOUT_MS) || 60_000),
+    });
+    const generated = await generator.generate(row.transcript);
+    row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+    if (!row) return;
+    const preserveUserTitle = row.title_source === "user";
+    db.prepare(`
+      UPDATE meetings
+         SET title=?,
+             title_source=?,
+             summary=?,
+             summary_status='completed',
+             summary_model=?,
+             summary_error=NULL,
+             summary_updated_at=datetime('now'),
+             updated_at=datetime('now')
+       WHERE id=?
+    `).run(
+      preserveUserTitle ? row.title : generated.title,
+      preserveUserTitle ? "user" : "ai",
+      generated.summary,
+      generated.model,
+      meetingId
+    );
+    broadcastSSE("meeting-summary", { meetingId, status: "completed" });
+  } catch (error) {
+    const message = String(error?.message || error || "summary generation failed").slice(0, 2000);
+    db.prepare(`
+      UPDATE meetings
+         SET summary_status='failed',
+             summary_model=?,
+             summary_error=?,
+             summary_updated_at=datetime('now'),
+             updated_at=datetime('now')
+       WHERE id=?
+    `).run(model, message, meetingId);
+    broadcastSSE("meeting-summary", { meetingId, status: "failed", error: message });
+    console.error(`[meeting-summary] ${meetingId}:`, message);
+  } finally {
+    activeMeetingSummaries.delete(meetingId);
+  }
+}
+
+function queueMeetingSummary(meetingId, force = false) {
+  const row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+  if (!row) throw Object.assign(new Error("meeting not found"), { statusCode: 404 });
+  if (activeMeetingSummaries.has(meetingId) || ["queued", "processing"].includes(row.summary_status)) {
+    return row;
+  }
+  if (!force && row.summary_status === "completed") return row;
+  if (row.transcription_status !== "completed" || !String(row.transcript || "").trim()) {
+    throw Object.assign(new Error("completed meeting transcript is required"), { statusCode: 409 });
+  }
+  db.prepare(`
+    UPDATE meetings
+       SET summary_status='queued',
+           summary_model=?,
+           summary_error=NULL,
+           summary_updated_at=datetime('now'),
+           updated_at=datetime('now')
+     WHERE id=?
+  `).run(getMeetingSummaryModel(), meetingId);
+  setImmediate(() => processMeetingSummary(meetingId));
+  return db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+}
+
+async function processMeetingTranscription(meetingId) {
+  if (activeMeetingTranscriptions.has(meetingId)) return;
+  activeMeetingTranscriptions.add(meetingId);
+  try {
+    let row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+    if (!row) throw new Error("meeting not found");
+    const options = normalizeTranscriptionOptions(parseMeetingJSON(row.transcription_options_json, {}));
+    db.prepare(`
+      UPDATE meetings
+         SET transcription_status='processing',
+             transcription_attempts=COALESCE(transcription_attempts,0)+1,
+             transcription_error=NULL,
+             transcription_model=?,
+             transcription_updated_at=datetime('now'),
+             updated_at=datetime('now')
+       WHERE id=?
+    `).run(options.model_id, meetingId);
+
+    row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+    const result = await callScribeForMeeting(row, options);
+    const words = normalizeScribeWords(result.words);
+    const segments = buildSpeakerSegments(words);
+    db.prepare(`
+      UPDATE meetings
+         SET transcription_status='completed',
+             transcription_error=NULL,
+             transcription_model=?,
+             transcription_id=?,
+             transcription_language=?,
+             transcription_language_probability=?,
+             transcription_duration_seconds=?,
+             transcription_words_json=?,
+             transcription_segments_json=?,
+             transcript=?,
+             transcription_updated_at=datetime('now'),
+             updated_at=datetime('now')
+       WHERE id=?
+    `).run(
+      options.model_id,
+      normalizeOptionalText(result.transcription_id) || null,
+      normalizeOptionalText(result.language_code) || null,
+      Number.isFinite(Number(result.language_probability)) ? Number(result.language_probability) : null,
+      Number.isFinite(Number(result.audio_duration_secs)) ? Number(result.audio_duration_secs) : row.duration_seconds,
+      JSON.stringify(words),
+      JSON.stringify(segments),
+      String(result.text || "").trim(),
+      meetingId
+    );
+    broadcastSSE("meeting-transcription", { meetingId, status: "completed", speakers: [...new Set(segments.map(segment => segment.speaker_id))] });
+    queueMeetingSummary(meetingId, true);
+  } catch (error) {
+    const message = String(error?.message || error || "transcription failed").slice(0, 2000);
+    db.prepare(`
+      UPDATE meetings
+         SET transcription_status='failed',
+             transcription_error=?,
+             transcription_updated_at=datetime('now'),
+             updated_at=datetime('now')
+       WHERE id=?
+    `).run(message, meetingId);
+    broadcastSSE("meeting-transcription", { meetingId, status: "failed", error: message });
+    console.error(`[meeting-transcription] ${meetingId}:`, message);
+  } finally {
+    activeMeetingTranscriptions.delete(meetingId);
+  }
+}
+
+function queueMeetingTranscription(meetingId, requestedOptions = {}, force = false) {
+  const row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+  if (!row) throw Object.assign(new Error("meeting not found"), { statusCode: 404 });
+  if (activeMeetingTranscriptions.has(meetingId) || ["queued", "processing"].includes(row.transcription_status)) {
+    return row;
+  }
+  if (!force && row.transcription_status === "completed") return row;
+
+  const existingOptions = parseMeetingJSON(row.transcription_options_json, {});
+  const options = normalizeTranscriptionOptions(requestedOptions, existingOptions);
+  db.prepare(`
+    UPDATE meetings
+       SET transcription_status='queued',
+           transcription_error=NULL,
+           transcription_model=?,
+           transcription_options_json=?,
+           transcription_updated_at=datetime('now'),
+           updated_at=datetime('now')
+     WHERE id=?
+  `).run(options.model_id, JSON.stringify(options), meetingId);
+  setImmediate(() => processMeetingTranscription(meetingId));
+  return db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+}
+
 const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Figma-Token, X-Review-Project, X-Review-Source");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Figma-Token, X-Review-Project, X-Review-Source, X-Recorded-At, X-Recorded-Date, X-Original-Filename, X-Duration-Seconds");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Private-Network", "true");
 
@@ -2320,6 +2965,182 @@ const server = http.createServer(async (req, res) => {
       const codexQuota = await getOpenClawCodexQuota();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ codexQuota, timestamp: new Date().toISOString() }));
+
+    // --- Meeting Archive API ---
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/audio$/) && req.method === "POST") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      if (!meetingId) {
+        sendError(res, 400, "invalid meeting id");
+        return;
+      }
+      try {
+        let row = await receiveMeetingAudio(req, meetingId);
+        if (url.searchParams.get("transcribe") !== "0") {
+          row = queueMeetingTranscription(meetingId);
+        }
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(serializeMeeting(req, row)));
+      } catch (error) {
+        if (!res.destroyed && !res.headersSent) {
+          sendError(res, Number(error?.statusCode) || 500, error?.statusCode ? error.message : "meeting upload failed");
+        }
+      }
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/transcription\/retry$/) && req.method === "POST") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      if (!meetingId) {
+        sendError(res, 400, "invalid meeting id");
+        return;
+      }
+      const rawBody = await parseBody(req);
+      const body = rawBody ? JSON.parse(rawBody) : {};
+      try {
+        const row = queueMeetingTranscription(meetingId, body, true);
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(serializeMeeting(req, row)));
+      } catch (error) {
+        sendError(res, Number(error?.statusCode) || 500, error.message || "failed to retry transcription");
+      }
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/summary\/retry$/) && req.method === "POST") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      if (!meetingId) {
+        sendError(res, 400, "invalid meeting id");
+        return;
+      }
+      try {
+        const row = queueMeetingSummary(meetingId, true);
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(serializeMeeting(req, row)));
+      } catch (error) {
+        sendError(res, Number(error?.statusCode) || 500, error.message || "failed to retry summary");
+      }
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/transcription$/) && req.method === "POST") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      if (!meetingId) {
+        sendError(res, 400, "invalid meeting id");
+        return;
+      }
+      const rawBody = await parseBody(req);
+      const body = rawBody ? JSON.parse(rawBody) : {};
+      try {
+        const row = queueMeetingTranscription(meetingId, body, body.force === true);
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(serializeMeeting(req, row)));
+      } catch (error) {
+        sendError(res, Number(error?.statusCode) || 500, error.message || "failed to queue transcription");
+      }
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/transcription$/) && req.method === "GET") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      const row = meetingId ? db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId) : null;
+      if (!row) {
+        sendError(res, 404, "meeting not found");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(serializeMeeting(req, row).transcription));
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/audio$/) && req.method === "DELETE") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      const row = meetingId ? db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId) : null;
+      if (!row) {
+        sendError(res, 404, "meeting not found");
+        return;
+      }
+      if (["queued", "processing"].includes(row.transcription_status)) {
+        sendError(res, 409, "audio cannot be deleted while transcription is active");
+        return;
+      }
+      const filePath = getMeetingArchivePath(row.audio_path);
+      if (filePath) {
+        await fs.promises.rm(filePath, { force: true });
+        await fs.promises.rmdir(path.dirname(filePath)).catch(() => {});
+      }
+      db.prepare("UPDATE meetings SET audio_deleted_at=datetime('now'), updated_at=datetime('now') WHERE id=?").run(meetingId);
+      const updated = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(serializeMeeting(req, updated)));
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/audio$/) && req.method === "GET") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      const row = meetingId ? db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId) : null;
+      if (!row) {
+        sendError(res, 404, "meeting not found");
+        return;
+      }
+      sendMeetingAudio(req, res, row);
+
+    } else if (url.pathname === "/api/meetings" && req.method === "GET") {
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
+      const rows = db.prepare("SELECT * FROM meetings ORDER BY record_number DESC LIMIT ?").all(limit);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ meetings: rows.map(row => serializeMeeting(req, row)) }));
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+$/) && req.method === "GET") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      const row = meetingId ? db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId) : null;
+      if (!row) {
+        sendError(res, 404, "meeting not found");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(serializeMeeting(req, row)));
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+$/) && req.method === "PATCH") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      const existing = meetingId ? db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId) : null;
+      if (!existing) {
+        sendError(res, 404, "meeting not found");
+        return;
+      }
+      const rawBody = await parseBody(req);
+      const body = rawBody ? JSON.parse(rawBody) : {};
+      const updates = {
+        title: Object.prototype.hasOwnProperty.call(body, "title") ? normalizeOptionalText(body.title) : existing.title,
+        titleSource: Object.prototype.hasOwnProperty.call(body, "title")
+          ? (normalizeOptionalText(body.title) ? "user" : "default")
+          : (existing.title_source || "default"),
+        transcript: Object.prototype.hasOwnProperty.call(body, "transcript") ? normalizeOptionalText(body.transcript) : existing.transcript,
+        speakerNames: Object.prototype.hasOwnProperty.call(body, "speaker_names")
+          ? normalizeMeetingSpeakerNames(body.speaker_names)
+          : parseMeetingJSON(existing.speaker_names_json, {}),
+      };
+      db.prepare("UPDATE meetings SET title=?, title_source=?, transcript=?, speaker_names_json=?, updated_at=datetime('now') WHERE id=?")
+        .run(updates.title, updates.titleSource, updates.transcript, JSON.stringify(updates.speakerNames), meetingId);
+      const row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(serializeMeeting(req, row)));
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+$/) && req.method === "DELETE") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      const existing = meetingId ? db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId) : null;
+      if (!existing) {
+        sendError(res, 404, "meeting not found");
+        return;
+      }
+      if (
+        ["queued", "processing"].includes(existing.transcription_status)
+        || ["queued", "processing"].includes(existing.summary_status)
+      ) {
+        sendError(res, 409, "meeting cannot be deleted while processing is active");
+        return;
+      }
+      const filePath = getMeetingArchivePath(existing.audio_path);
+      if (filePath) {
+        await fs.promises.rm(filePath, { force: true });
+        await fs.promises.rmdir(path.dirname(filePath)).catch(() => {});
+      }
+      db.prepare("DELETE FROM meetings WHERE id=?").run(meetingId);
+      res.writeHead(204);
+      res.end();
+
+    // --- Dependency Update API ---
+    } else if (url.pathname === "/api/dependencies" && req.method === "GET") {
+      const result = await scanDependencies({ forceRefresh: url.searchParams.get("refresh") === "1" });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
 
     // --- Today Task Queue API ---
     } else if (url.pathname === "/api/today-queue/status" && req.method === "GET") {
