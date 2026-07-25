@@ -101,6 +101,7 @@ db.exec(`
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     emoji TEXT,
+    status TEXT DEFAULT 'active',
     sort_order INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
@@ -232,7 +233,8 @@ try {
     CREATE INDEX IF NOT EXISTS idx_items_dispatch_nonce ON items(dispatch_nonce);
   `);
 } catch {}
-// Migration: discord channel mapping + project-level AI assignee
+// Migration: project lifecycle + discord channel mapping + project-level AI assignee
+try { db.exec("ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_channel_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_thread_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN default_ai_bot_key TEXT DEFAULT 'bbangbbang'"); } catch {}
