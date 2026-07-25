@@ -26,6 +26,8 @@ const { createMeetingSummaryGenerator } = require("./meeting-summary");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+const { createTodayQueueResultHandler } = require("./today-queue-result-handler");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { validateGitCommitDeclaration } = require("./today-queue-policy");
 
 const PORT = process.env.USAGE_PORT || 3100;
@@ -2114,48 +2116,10 @@ function validateTodayQueueProjectId(value) {
   return { projectId };
 }
 
-function markerStatusIsReadyForReview(status) {
-  return String(status || "").trim().toLowerCase() === "ready_for_review";
-}
-
-function markerRunIdIsTodayQueue(runId) {
-  return String(runId || "").trim().toLowerCase() === "today-queue";
-}
-
-function messageChannelMatchesDispatch(msg, item) {
-  if (!item.dispatch_channel_id) return false;
-  if (msg.channelId === item.dispatch_channel_id) return true;
-  if (msg.channel?.id === item.dispatch_channel_id) return true;
-  if (msg.channel?.parentId === item.dispatch_channel_id) return true;
-  return false;
-}
-
-async function handleTodayQueueResultMarkerMessage(msg, marker) {
-  const ignore = (reason, extra = {}) => ({ accepted: false, reason, ...extra });
-
-  if (!msg?.author?.bot) return ignore("author_not_bot");
-  if (!markerRunIdIsTodayQueue(marker.run_id)) return ignore("run_id_mismatch");
-  if (!markerStatusIsReadyForReview(marker.status)) return ignore("status_not_ready_for_review");
-  if (!Number.isInteger(marker.item_id)) return ignore("item_id_missing");
-  if (!marker.nonce) return ignore("nonce_missing");
-  const gitCommit = validateGitCommitDeclaration(marker.raw);
-  if (!gitCommit.valid) return ignore(gitCommit.reason);
-
-  const item = getTodayQueueItemById(marker.item_id);
-  if (!item) return ignore("item_not_found", { item_id: marker.item_id });
-  if (msg.id && item.dispatch_message_id && msg.id === item.dispatch_message_id) return ignore("dispatch_prompt_message");
-  if (item.status !== "in_progress") return ignore("item_not_in_progress", { item_id: item.id, status: item.status });
-  if (item.owner !== "AI" || !item.is_today) return ignore("item_not_active_today_ai", { item_id: item.id });
-  if (!item.dispatch_nonce || item.dispatch_nonce !== marker.nonce) return ignore("nonce_mismatch", { item_id: item.id });
-  if (!item.dispatch_target_bot_user_id) return ignore("expected_bot_missing", { item_id: item.id });
-  if (item.dispatch_target_bot_user_id !== msg.author.id) {
-    return ignore("author_mismatch", { item_id: item.id, expected_author_id: item.dispatch_target_bot_user_id, actual_author_id: msg.author.id });
-  }
-  if (!messageChannelMatchesDispatch(msg, item)) {
-    return ignore("channel_mismatch", { item_id: item.id, expected_channel_id: item.dispatch_channel_id, actual_channel_id: msg.channelId });
-  }
-
-  const updated = db.prepare(`
+const handleTodayQueueResultMarkerMessage = createTodayQueueResultHandler({
+  getItemById: getTodayQueueItemById,
+  validateGitCommitDeclaration,
+  markItemReview: (itemId, nonce) => db.prepare(`
     UPDATE items
        SET status='review',
            review_count=COALESCE(review_count,0)+1,
@@ -2165,27 +2129,10 @@ async function handleTodayQueueResultMarkerMessage(msg, marker) {
      WHERE id=?
        AND status='in_progress'
        AND dispatch_nonce=?
-  `).run(item.id, marker.nonce);
-
-  if (updated.changes !== 1) return ignore("duplicate_or_stale", { item_id: item.id });
-
-  broadcastSSE("today-queue", { action: "result", itemId: item.id, messageId: msg.id, authorId: msg.author.id });
-  broadcastSSE("items-changed", { action: "today-queue-result", itemId: item.id });
-
-  const next = await dispatchNextTodayQueueItem();
-  broadcastSSE("today-queue", {
-    action: "next-after-result",
-    previousItemId: item.id,
-    started: next.started,
-    reason: next.reason,
-    itemId: next.dispatch?.item_id || next.item?.id || null,
-  });
-  if (next.started || next.reason === "missing_discord_target" || next.reason === "dispatch_failed") {
-    broadcastSSE("items-changed", { action: "today-queue-next", reason: next.reason, itemId: next.dispatch?.item_id || next.item?.id || null });
-  }
-
-  return { accepted: true, item_id: item.id, next };
-}
+  `).run(itemId, nonce),
+  dispatchNext: projectId => dispatchNextTodayQueueItem({ projectId }),
+  broadcast: broadcastSSE,
+});
 
 function startTodayQueueBridge() {
   if (!TODAY_QUEUE_BRIDGE_ENABLED) {
