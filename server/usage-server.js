@@ -23,6 +23,8 @@ const Database = require("better-sqlite3");
 const sharp = require("sharp");
 const { scanDependencies } = require("./dependency-scanner");
 const { createMeetingSummaryGenerator } = require("./meeting-summary");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { validateGitCommitDeclaration } = require("./today-queue-policy");
 
 const PORT = process.env.USAGE_PORT || 3100;
 const API_KEY = process.env.USAGE_API_KEY;
@@ -1935,6 +1937,7 @@ function buildTodoQueueDispatchPrompt(item, { nonce, targetBot }) {
     `item_id: ${item.id}`,
     `nonce: ${nonce}`,
     "status: ready_for_review",
+    "git_commit: <7-40자 commit SHA | not_applicable: repository 파일을 변경하지 않은 이유>",
     "evidence: <실제로 확인한 명령/파일/스크린샷/결과 요약>",
   ].join("\n");
 
@@ -1955,6 +1958,8 @@ function buildTodoQueueDispatchPrompt(item, { nonce, targetBot }) {
     "[rules]",
     "- 이 메시지의 item 하나만 처리해.",
     "- 완료했다고 말만 하지 말고, 실제 변경/검증 결과를 evidence에 적어.",
+    "- 코드·문서·설정 등 git repository 파일을 변경한 작업은 검증 후 해당 item 변경만 stage해서 반드시 commit해. 기존의 관련 없는 변경은 포함하지 마.",
+    "- repository 파일을 변경하지 않은 작업만 git_commit에 `not_applicable: 이유`를 적을 수 있어. 그 외에는 실제 commit SHA를 적어.",
     "- 작업이 끝나면 답변 마지막에 아래 marker를 정확히 채워서 보내.",
     "- marker가 없거나 item_id/nonce가 다르면 두두 큐는 다음 항목으로 진행하지 않는다.",
     "- done 처리는 하지 않는다. 큐는 ready_for_review marker를 받으면 review까지만 넘긴다.",
@@ -2243,6 +2248,8 @@ async function handleTodayQueueResultMarkerMessage(msg, marker) {
   if (!markerStatusIsReadyForReview(marker.status)) return ignore("status_not_ready_for_review");
   if (!Number.isInteger(marker.item_id)) return ignore("item_id_missing");
   if (!marker.nonce) return ignore("nonce_missing");
+  const gitCommit = validateGitCommitDeclaration(marker.raw);
+  if (!gitCommit.valid) return ignore(gitCommit.reason);
 
   const item = getTodayQueueItemById(marker.item_id);
   if (!item) return ignore("item_not_found", { item_id: marker.item_id });
