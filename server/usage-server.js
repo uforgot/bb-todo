@@ -24,6 +24,8 @@ const sharp = require("sharp");
 const { scanDependencies } = require("./dependency-scanner");
 const { createMeetingSummaryGenerator } = require("./meeting-summary");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+const { createTodayQueueService } = require("./today-queue-service");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { validateGitCommitDeclaration } = require("./today-queue-policy");
 
 const PORT = process.env.USAGE_PORT || 3100;
@@ -2078,150 +2080,38 @@ async function dispatchTodoItemToDiscord(item, { botKey = DEFAULT_TODO_QUEUE_BOT
   return { item_id: item.id, channel_id: channelId, message_id: messageId, message_url: messageUrl, nonce, target_bot: targetBot.key, target_bot_user_id: targetBot.discordUserId };
 }
 
-const TODAY_QUEUE_ORDER_SQL = `
-  COALESCE(p.sort_order, p.id),
-  CASE WHEN c.id IS NULL THEN 0 ELSE 1 END,
-  COALESCE(c.sort_order, 0),
-  COALESCE(i.sort_order, i.id),
-  i.id
-`;
+const todayQueueService = createTodayQueueService({
+  db,
+  serializeTodoItem,
+  normalizeBotKey: normalizeTodoQueueBotKey,
+  defaultBotKey: DEFAULT_TODO_QUEUE_BOT_KEY,
+  dispatchItem: dispatchTodoItemToDiscord,
+  recordFailure: recordTodoDispatchFailure,
+});
 
-function todayQueueSelectSql(whereClause) {
-  return `
-    SELECT i.*,
-           p.name as project_name,
-           p.emoji as project_emoji,
-           p.discord_channel_id,
-           p.discord_thread_id,
-           p.default_ai_bot_key as project_default_ai_bot_key,
-           p.sort_order as project_sort_order,
-           c.name as category_name,
-           c.sort_order as category_sort_order
-      FROM items i
-      JOIN projects p ON i.project_id = p.id
-      LEFT JOIN categories c ON i.category_id = c.id
-     WHERE i.is_today=1
-       AND i.owner='AI'
-       ${whereClause || ""}
-     ORDER BY ${TODAY_QUEUE_ORDER_SQL}
-  `;
+function buildTodayQueueStatus(projectId = null, extra = {}) {
+  return todayQueueService.buildStatus({ projectId, extra });
 }
 
-function getTodayQueueItems(statuses = []) {
-  const normalized = statuses.map(s => String(s || "").trim()).filter(Boolean);
-  if (!normalized.length) return db.prepare(todayQueueSelectSql("")).all();
-  const placeholders = normalized.map(() => "?").join(",");
-  return db.prepare(todayQueueSelectSql(`AND i.status IN (${placeholders})`)).all(...normalized);
+async function dispatchNextTodayQueueItem({ projectId = null, botKey = null, allowWhenRunning = false } = {}) {
+  return todayQueueService.dispatchNext({ projectId, botKey, allowWhenRunning });
 }
 
-function serializeTodayQueueItem(item) {
-  if (!item) return null;
-  return {
-    ...serializeTodoItem(item),
-    project_id: item.project_id,
-    project_name: item.project_name || null,
-    project_emoji: item.project_emoji || null,
-    category_id: item.category_id || null,
-    category_name: item.category_name || null,
-    project_sort_order: item.project_sort_order ?? null,
-    category_sort_order: item.category_sort_order ?? null,
-    default_ai_bot_key: normalizeTodoQueueBotKey(item.project_default_ai_bot_key || DEFAULT_TODO_QUEUE_BOT_KEY),
-    has_discord_target: Boolean(item.discord_thread_id || item.discord_channel_id),
-  };
-}
-
-function buildTodayQueueStatus(extra = {}) {
-  const items = getTodayQueueItems(["todo", "in_progress", "review"]);
-  const counts = { todo: 0, in_progress: 0, review: 0, total: items.length };
-  for (const item of items) {
-    if (counts[item.status] !== undefined) counts[item.status] += 1;
-  }
-  const active = items.filter(i => i.status === "in_progress");
-  const next = items.find(i => i.status === "todo") || null;
-  return {
-    running: active.length > 0,
-    counts,
-    active: active.map(serializeTodayQueueItem),
-    next: serializeTodayQueueItem(next),
-    items: items.map(serializeTodayQueueItem),
-    ...extra,
-  };
-}
-
-async function dispatchNextTodayQueueItem({ botKey = null, allowWhenRunning = false } = {}) {
-  const active = getTodayQueueItems(["in_progress"]);
-  if (active.length && !allowWhenRunning) {
-    return {
-      started: false,
-      reason: "already_running",
-      active: active.map(serializeTodayQueueItem),
-      status: buildTodayQueueStatus(),
-    };
-  }
-
-  const next = getTodayQueueItems(["todo"])[0] || null;
-  if (!next) {
-    return {
-      started: false,
-      reason: "empty",
-      status: buildTodayQueueStatus(),
-    };
-  }
-
-  if (!next.discord_thread_id && !next.discord_channel_id) {
-    const reason = `item #${next.id} project has no Discord channel/thread mapping`;
-    recordTodoDispatchFailure(next.id, reason);
-    return {
-      started: false,
-      reason: "missing_discord_target",
-      item: serializeTodayQueueItem(next),
-      status: buildTodayQueueStatus(),
-    };
-  }
-
-  try {
-    const dispatchBotKey = normalizeOptionalText(botKey) || next.project_default_ai_bot_key || DEFAULT_TODO_QUEUE_BOT_KEY;
-    const dispatch = await dispatchTodoItemToDiscord(next, { botKey: dispatchBotKey });
-    return {
-      started: true,
-      reason: "dispatched",
-      dispatch,
-      item: serializeTodayQueueItem(db.prepare(todayQueueSelectSql("AND i.id=?")).get(next.id)),
-      status: buildTodayQueueStatus(),
-    };
-  } catch (error) {
-    recordTodoDispatchFailure(next.id, error);
-    return {
-      started: false,
-      reason: "dispatch_failed",
-      error: String(error?.message || error),
-      item: serializeTodayQueueItem(next),
-      status: buildTodayQueueStatus(),
-    };
-  }
-}
-
-function stopTodayQueue() {
-  const active = getTodayQueueItems(["in_progress"]);
-  const stopMessage = "today queue stopped";
-  const stmt = db.prepare(`
-    UPDATE items
-       SET status='todo',
-           dispatch_nonce=NULL,
-           dispatch_started_at=NULL,
-           dispatch_last_error=?
-     WHERE id=?
-  `);
-  for (const item of active) stmt.run(stopMessage, item.id);
-  return {
-    stopped: active.length,
-    items: active.map(serializeTodayQueueItem),
-    status: buildTodayQueueStatus(),
-  };
+function stopTodayQueue({ projectId = null } = {}) {
+  return todayQueueService.stop({ projectId });
 }
 
 function getTodayQueueItemById(itemId) {
-  return db.prepare(todayQueueSelectSql("AND i.id=?")).get(itemId) || null;
+  return todayQueueService.getItemById(itemId);
+}
+
+function validateTodayQueueProjectId(value) {
+  const projectId = todayQueueService.normalizeProjectId(value);
+  if (projectId === undefined) return { error: "project_id must be a positive integer", status: 400 };
+  if (projectId !== null && !todayQueueService.projectExists(projectId)) {
+    return { error: "project not found", status: 404 };
+  }
+  return { projectId };
 }
 
 function markerStatusIsReadyForReview(status) {
@@ -3151,25 +3041,49 @@ const server = http.createServer(async (req, res) => {
 
     // --- Today Task Queue API ---
     } else if (url.pathname === "/api/today-queue/status" && req.method === "GET") {
+      const projectValidation = validateTodayQueueProjectId(url.searchParams.get("project_id"));
+      if (projectValidation.error) {
+        sendError(res, projectValidation.status, projectValidation.error);
+        return;
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(buildTodayQueueStatus()));
+      res.end(JSON.stringify(buildTodayQueueStatus(projectValidation.projectId)));
 
     } else if ((url.pathname === "/api/today-queue/start" || url.pathname === "/api/today-queue/next") && req.method === "POST") {
       const body = await parseBody(req);
       const payload = body ? JSON.parse(body) : {};
+      const projectValidation = validateTodayQueueProjectId(payload.project_id);
+      if (projectValidation.error) {
+        sendError(res, projectValidation.status, projectValidation.error);
+        return;
+      }
       const requestedBotKey = normalizeOptionalText(payload.bot_key || payload.target_bot_key);
-      const result = await dispatchNextTodayQueueItem({ botKey: requestedBotKey || null });
-      broadcastSSE("today-queue", { action: url.pathname.endsWith("/start") ? "start" : "next", started: result.started, reason: result.reason, itemId: result.dispatch?.item_id || result.item?.id || null });
+      const result = await dispatchNextTodayQueueItem({ projectId: projectValidation.projectId, botKey: requestedBotKey || null });
+      const event = {
+        action: url.pathname.endsWith("/start") ? "start" : "next",
+        projectId: result.project_id,
+        started: result.started,
+        reason: result.reason,
+        itemId: result.dispatch?.item_id || result.item?.id || null,
+      };
+      broadcastSSE("today-queue", event);
       if (result.started || result.reason === "missing_discord_target" || result.reason === "dispatch_failed") {
-        broadcastSSE("items-changed", { action: "today-queue", reason: result.reason });
+        broadcastSSE("items-changed", { action: "today-queue", projectId: result.project_id, reason: result.reason });
       }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
 
     } else if (url.pathname === "/api/today-queue/stop" && req.method === "POST") {
-      const result = stopTodayQueue();
-      broadcastSSE("today-queue", { action: "stop", stopped: result.stopped });
-      if (result.stopped > 0) broadcastSSE("items-changed", { action: "today-queue-stop" });
+      const body = await parseBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const projectValidation = validateTodayQueueProjectId(payload.project_id);
+      if (projectValidation.error) {
+        sendError(res, projectValidation.status, projectValidation.error);
+        return;
+      }
+      const result = stopTodayQueue({ projectId: projectValidation.projectId });
+      broadcastSSE("today-queue", { action: "stop", projectId: result.project_id, stopped: result.stopped, reason: result.reason });
+      if (result.stopped > 0) broadcastSSE("items-changed", { action: "today-queue-stop", projectId: result.project_id });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
 
