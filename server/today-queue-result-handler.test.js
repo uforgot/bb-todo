@@ -57,7 +57,7 @@ function createFixture() {
     validateGitCommitDeclaration,
     markItemReview: (itemId, nonce) => {
       const item = items.get(itemId);
-      if (!item || item.status !== "in_progress" || item.dispatch_nonce !== nonce) return { changes: 0 };
+      if (!item || !["in_progress", "todo"].includes(item.status) || item.dispatch_nonce !== nonce) return { changes: 0 };
       item.status = "review";
       return { changes: 1 };
     },
@@ -101,6 +101,17 @@ test("continues each accepted result inside its own project", async () => {
     events.filter(entry => entry.payload.action === "next-after-result").map(entry => entry.payload.itemId).sort(),
     [102, 202],
   );
+});
+
+test("accepts a matching result when a dispatched item was restored to todo", async () => {
+  const fixture = createFixture();
+  fixture.items.get(101).status = "todo";
+
+  const result = await fixture.handler(fixture.message(1), createMarker(101, "nonce-a"));
+
+  assert.equal(result.accepted, true);
+  assert.equal(fixture.items.get(101).status, "review");
+  assert.deepEqual(fixture.nextCalls, [1]);
 });
 
 test("rejects duplicate, wrong nonce, author, and channel without continuing", async () => {

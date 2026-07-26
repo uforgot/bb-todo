@@ -35,7 +35,12 @@ function createTodayQueueResultHandler({
     const item = getItemById(marker.item_id);
     if (!item) return ignore("item_not_found", { item_id: marker.item_id });
     if (msg.id && item.dispatch_message_id && msg.id === item.dispatch_message_id) return ignore("dispatch_prompt_message");
-    if (item.status !== "in_progress") return ignore("item_not_in_progress", { item_id: item.id, status: item.status });
+    // A generic item PATCH can restore a dispatched task to todo without clearing its
+    // dispatch nonce. The matching nonce, bot, and channel still prove this result
+    // belongs to the current dispatch. An intentional queue stop clears the nonce.
+    if (item.status !== "in_progress" && item.status !== "todo") {
+      return ignore("item_not_in_progress", { item_id: item.id, status: item.status });
+    }
     if (item.owner !== "AI" || !item.is_today) return ignore("item_not_active_today_ai", { item_id: item.id });
     if (!item.dispatch_nonce || item.dispatch_nonce !== marker.nonce) return ignore("nonce_mismatch", { item_id: item.id });
     if (!item.dispatch_target_bot_user_id) return ignore("expected_bot_missing", { item_id: item.id });

@@ -2133,7 +2133,7 @@ const handleTodayQueueResultMarkerMessage = createTodayQueueResultHandler({
            updated_at=datetime('now'),
            dispatch_last_error=NULL
      WHERE id=?
-       AND status='in_progress'
+       AND status IN ('in_progress','todo')
        AND dispatch_nonce=?
   `).run(itemId, nonce),
   dispatchNext: projectId => dispatchNextTodayQueueItem({ projectId }),
