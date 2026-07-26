@@ -1971,6 +1971,7 @@ function buildTodoQueueDispatchPrompt(item, { nonce, targetBot }) {
     "- repository 파일을 변경하지 않은 작업만 git_commit에 `not_applicable: 이유`를 적을 수 있어. 그 외에는 실제 commit SHA를 적어.",
     "- 작업이 끝나면 답변 마지막에 아래 marker를 정확히 채워서 보내.",
     "- marker가 없거나 item_id/nonce가 다르면 두두 큐는 다음 항목으로 진행하지 않는다.",
+    `- 선행 관계 때문에 대기 순서를 바꿔야 하면 \`~/.openclaw/workspace/scripts/todo.sh queue move ${item.project_id} <item_id> --before|--after <anchor_item_id>\`를 사용해. 실행 중 항목은 고정되고 todo 대기 항목만 이동된다.`,
     "- done 처리는 하지 않는다. 큐는 ready_for_review marker를 받으면 review까지만 넘긴다.",
     "",
     "```text",

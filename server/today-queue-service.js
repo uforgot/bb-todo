@@ -200,11 +200,11 @@ function createTodayQueueService({
     if (mutationIsLocked(projectId)) {
       return { ok: false, reason: "action_in_progress", status: 409 };
     }
-    if (runningItem(projectId)) {
-      return { ok: false, reason: "queue_running", status: 409 };
-    }
     if (beforeItemId !== null && afterItemId !== null) {
       return { ok: false, reason: "choose_before_or_after", status: 400 };
+    }
+    if (beforeItemId === itemId || afterItemId === itemId) {
+      return { ok: false, reason: "anchor_is_item", status: 400 };
     }
     const item = db.prepare("SELECT * FROM items WHERE id=?").get(itemId);
     if (!item || item.project_id !== projectId) {
@@ -214,8 +214,48 @@ function createTodayQueueService({
       return { ok: false, reason: "item_not_eligible", status: 409 };
     }
 
-    const currentIds = orderedProjectItems(projectId).filter(row => row.id !== itemId).map(row => row.id);
+    const currentItems = orderedProjectItems(projectId);
+    const active = currentItems.find(row => row.status === "in_progress") || null;
     const anchorId = beforeItemId ?? afterItemId;
+
+    if (active) {
+      if (!isQueueMember(item) || item.status !== "todo") {
+        return { ok: false, reason: "item_not_pending", status: 409, active_item_id: active.id };
+      }
+
+      const pendingIds = currentItems
+        .filter(row => row.status === "todo" && row.id !== itemId)
+        .map(row => row.id);
+      let insertIndex = pendingIds.length;
+      if (anchorId !== null) {
+        const anchor = currentItems.find(row => row.id === anchorId);
+        if (!anchor) {
+          return { ok: false, reason: "anchor_not_found", status: 409, current_item_ids: currentItems.map(row => row.id) };
+        }
+        if (anchor.status !== "todo") {
+          return { ok: false, reason: "anchor_not_pending", status: 409, active_item_id: active.id };
+        }
+        const anchorIndex = pendingIds.indexOf(anchorId);
+        insertIndex = beforeItemId !== null ? anchorIndex : anchorIndex + 1;
+      }
+
+      const nextPendingIds = [...pendingIds];
+      nextPendingIds.splice(insertIndex, 0, itemId);
+      let pendingIndex = 0;
+      const nextIds = currentItems.map(row => (
+        row.status === "todo" ? nextPendingIds[pendingIndex++] : row.id
+      ));
+      db.transaction(() => applyProjectOrder(projectId, nextIds))();
+      return {
+        ok: true,
+        project_id: projectId,
+        item_ids: nextIds,
+        active_item_id: active.id,
+        pending_item_ids: nextPendingIds,
+      };
+    }
+
+    const currentIds = currentItems.filter(row => row.id !== itemId).map(row => row.id);
     let insertIndex = currentIds.length;
     if (anchorId !== null) {
       const anchorIndex = currentIds.indexOf(anchorId);

@@ -216,7 +216,34 @@ test("places an item by anchor and resets its order when Today membership change
   db.close();
 });
 
-test("rejects queue reordering while an item is running", async () => {
+test("moves only pending items while preserving active and review positions", async () => {
+  const { db, service } = createFixture();
+  db.prepare(`
+    INSERT INTO items (id, project_id, status, title, sort_order, is_today, owner)
+    VALUES (105, 1, 'todo', 'A later pending item', 4, 1, 'AI')
+  `).run();
+  service.initializeOrder();
+  await service.dispatchNext({ projectId: 1 });
+
+  const moved = service.placeItem({ projectId: 1, itemId: 105, beforeItemId: 102 });
+  assert.equal(moved.ok, true);
+  assert.equal(moved.active_item_id, 101);
+  assert.deepEqual(moved.pending_item_ids, [105, 102]);
+  assert.deepEqual(service.buildProjectStatus(1).items.map(item => item.id), [101, 103, 105, 102]);
+  assert.equal(db.prepare("SELECT status FROM items WHERE id=101").get().status, "in_progress");
+
+  assert.equal(
+    service.placeItem({ projectId: 1, itemId: 101, beforeItemId: 105 }).reason,
+    "item_not_pending",
+  );
+  assert.equal(
+    service.placeItem({ projectId: 1, itemId: 102, beforeItemId: 101 }).reason,
+    "anchor_not_pending",
+  );
+  db.close();
+});
+
+test("rejects full queue reordering while an item is running", async () => {
   const { db, service } = createFixture();
   await service.dispatchNext({ projectId: 1 });
   const result = service.reorderProject({ projectId: 1, itemIds: [102, 101, 103] });
