@@ -1,5 +1,7 @@
 const TODAY_QUEUE_ORDER_SQL = `
   COALESCE(p.sort_order, p.id),
+  CASE WHEN i.today_queue_order IS NULL THEN 1 ELSE 0 END,
+  i.today_queue_order,
   CASE WHEN c.id IS NULL THEN 0 ELSE 1 END,
   COALESCE(c.sort_order, 0),
   COALESCE(i.sort_order, i.id),
@@ -48,6 +50,7 @@ function createTodayQueueService({
         LEFT JOIN categories c ON i.category_id = c.id
        WHERE i.is_today=1
          AND i.owner='AI'
+         AND i.status<>'archived'
          ${whereClause}
        ORDER BY ${TODAY_QUEUE_ORDER_SQL}
     `;
@@ -84,6 +87,152 @@ function createTodayQueueService({
     return projectId === null || Boolean(getProject(projectId));
   }
 
+  function isQueueMember(item) {
+    return Boolean(item)
+      && Boolean(item.is_today)
+      && item.owner === "AI"
+      && item.status !== "archived";
+  }
+
+  function orderedProjectItems(projectId) {
+    return db.prepare(`
+      SELECT i.*
+        FROM items i
+        LEFT JOIN categories c ON i.category_id=c.id
+       WHERE i.project_id=?
+         AND i.is_today=1
+         AND i.owner='AI'
+         AND i.status<>'archived'
+       ORDER BY CASE WHEN i.today_queue_order IS NULL THEN 1 ELSE 0 END,
+                i.today_queue_order,
+                CASE WHEN c.id IS NULL THEN 0 ELSE 1 END,
+                COALESCE(c.sort_order, 0),
+                COALESCE(i.sort_order, i.id),
+                i.id
+    `).all(projectId);
+  }
+
+  function applyProjectOrder(projectId, itemIds) {
+    db.prepare("UPDATE items SET today_queue_order=NULL WHERE project_id=?").run(projectId);
+    const update = db.prepare("UPDATE items SET today_queue_order=? WHERE id=? AND project_id=?");
+    itemIds.forEach((itemId, index) => update.run(index + 1, itemId, projectId));
+  }
+
+  function normalizeProjectOrder(projectId) {
+    const itemIds = orderedProjectItems(projectId).map(item => item.id);
+    applyProjectOrder(projectId, itemIds);
+    return itemIds;
+  }
+
+  function initializeOrder() {
+    const projectIds = db.prepare(`
+      SELECT DISTINCT project_id
+        FROM items
+       WHERE (is_today=1 AND owner='AI' AND status<>'archived')
+          OR today_queue_order IS NOT NULL
+       ORDER BY project_id
+    `).all().map(row => row.project_id);
+    db.transaction(() => {
+      projectIds.forEach(normalizeProjectOrder);
+    })();
+  }
+
+  function reconcileItem(before, after) {
+    const wasMember = isQueueMember(before);
+    const isMember = isQueueMember(after);
+    const oldProjectId = before?.project_id ?? null;
+    const newProjectId = after?.project_id ?? null;
+
+    if (wasMember && isMember && oldProjectId === newProjectId) {
+      if (after.today_queue_order == null) {
+        const ids = orderedProjectItems(newProjectId).filter(item => item.id !== after.id).map(item => item.id);
+        applyProjectOrder(newProjectId, [...ids, after.id]);
+      }
+      return;
+    }
+
+    if (oldProjectId !== null && (wasMember || before?.today_queue_order != null)) {
+      normalizeProjectOrder(oldProjectId);
+    }
+    if (isMember) {
+      const ids = orderedProjectItems(newProjectId).filter(item => item.id !== after.id).map(item => item.id);
+      applyProjectOrder(newProjectId, [...ids, after.id]);
+    }
+  }
+
+  function removeDeletedItem(item) {
+    if (item?.project_id != null && (isQueueMember(item) || item.today_queue_order != null)) {
+      normalizeProjectOrder(item.project_id);
+    }
+  }
+
+  function runningItem(projectId) {
+    return db.prepare(`
+      SELECT id FROM items
+       WHERE project_id=? AND is_today=1 AND owner='AI' AND status='in_progress'
+       LIMIT 1
+    `).get(projectId) || null;
+  }
+
+  function reorderProject({ projectId, itemIds }) {
+    if (mutationIsLocked(projectId)) {
+      return { ok: false, reason: "action_in_progress", status: 409 };
+    }
+    if (runningItem(projectId)) {
+      return { ok: false, reason: "queue_running", status: 409 };
+    }
+    const currentIds = orderedProjectItems(projectId).map(item => item.id);
+    const normalizedIds = Array.isArray(itemIds) ? itemIds.map(Number) : [];
+    const validIds = normalizedIds.every(Number.isInteger);
+    const uniqueIds = new Set(normalizedIds);
+    const sameSet = validIds
+      && uniqueIds.size === normalizedIds.length
+      && normalizedIds.length === currentIds.length
+      && currentIds.every(id => uniqueIds.has(id));
+    if (!sameSet) {
+      return { ok: false, reason: "stale_order", status: 409, current_item_ids: currentIds };
+    }
+    db.transaction(() => applyProjectOrder(projectId, normalizedIds))();
+    return { ok: true, project_id: projectId, item_ids: normalizedIds };
+  }
+
+  function placeItem({ projectId, itemId, beforeItemId = null, afterItemId = null }) {
+    if (mutationIsLocked(projectId)) {
+      return { ok: false, reason: "action_in_progress", status: 409 };
+    }
+    if (runningItem(projectId)) {
+      return { ok: false, reason: "queue_running", status: 409 };
+    }
+    if (beforeItemId !== null && afterItemId !== null) {
+      return { ok: false, reason: "choose_before_or_after", status: 400 };
+    }
+    const item = db.prepare("SELECT * FROM items WHERE id=?").get(itemId);
+    if (!item || item.project_id !== projectId) {
+      return { ok: false, reason: "item_not_found", status: 404 };
+    }
+    if (item.owner !== "AI" || item.status === "archived") {
+      return { ok: false, reason: "item_not_eligible", status: 409 };
+    }
+
+    const currentIds = orderedProjectItems(projectId).filter(row => row.id !== itemId).map(row => row.id);
+    const anchorId = beforeItemId ?? afterItemId;
+    let insertIndex = currentIds.length;
+    if (anchorId !== null) {
+      const anchorIndex = currentIds.indexOf(anchorId);
+      if (anchorIndex < 0) {
+        return { ok: false, reason: "anchor_not_found", status: 409, current_item_ids: currentIds };
+      }
+      insertIndex = beforeItemId !== null ? anchorIndex : anchorIndex + 1;
+    }
+    const nextIds = [...currentIds];
+    nextIds.splice(insertIndex, 0, itemId);
+    db.transaction(() => {
+      db.prepare("UPDATE items SET is_today=1 WHERE id=?").run(itemId);
+      applyProjectOrder(projectId, nextIds);
+    })();
+    return { ok: true, project_id: projectId, item_ids: nextIds };
+  }
+
   function serializeQueueItem(item) {
     if (!item) return null;
     return {
@@ -95,6 +244,7 @@ function createTodayQueueService({
       category_name: item.category_name || null,
       project_sort_order: item.project_sort_order ?? null,
       category_sort_order: item.category_sort_order ?? null,
+      today_queue_order: item.today_queue_order ?? null,
       default_ai_bot_key: normalizeBotKey(item.project_default_ai_bot_key || defaultBotKey),
       has_discord_target: Boolean(item.discord_thread_id || item.discord_channel_id),
     };
@@ -262,6 +412,13 @@ function createTodayQueueService({
     projectExists,
     getItems,
     getItemById,
+    isQueueMember,
+    initializeOrder,
+    normalizeProjectOrder,
+    reconcileItem,
+    removeDeletedItem,
+    reorderProject,
+    placeItem,
     buildProjectStatus,
     buildStatus,
     dispatchNext,

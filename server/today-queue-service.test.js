@@ -31,6 +31,7 @@ function createFixture({ waitForDispatch = false } = {}) {
       content TEXT,
       sort_order INTEGER DEFAULT 0,
       is_today INTEGER DEFAULT 0,
+      today_queue_order INTEGER,
       owner TEXT,
       dispatch_nonce TEXT,
       dispatch_started_at TEXT,
@@ -86,6 +87,7 @@ function createFixture({ waitForDispatch = false } = {}) {
     },
   });
   const service = makeService();
+  service.initializeOrder();
 
   return { db, service, makeService, dispatched, releaseDispatch };
 }
@@ -164,6 +166,61 @@ test("stops only the selected project", async () => {
   assert.equal(service.buildProjectStatus(2).running, true);
   assert.equal(db.prepare("SELECT status FROM items WHERE id=101").get().status, "todo");
   assert.equal(db.prepare("SELECT status FROM items WHERE id=201").get().status, "in_progress");
+  db.close();
+});
+
+test("reorders a project queue and rejects stale arrays", () => {
+  const { db, service } = createFixture();
+
+  const reordered = service.reorderProject({ projectId: 1, itemIds: [102, 101, 103] });
+  assert.equal(reordered.ok, true);
+  assert.deepEqual(service.buildProjectStatus(1).items.map(item => item.id), [102, 101, 103]);
+  assert.deepEqual(
+    db.prepare("SELECT id, today_queue_order FROM items WHERE project_id=1 AND today_queue_order IS NOT NULL ORDER BY today_queue_order").all(),
+    [
+      { id: 102, today_queue_order: 1 },
+      { id: 101, today_queue_order: 2 },
+      { id: 103, today_queue_order: 3 },
+    ]
+  );
+
+  const stale = service.reorderProject({ projectId: 1, itemIds: [102, 101] });
+  assert.equal(stale.reason, "stale_order");
+  assert.deepEqual(stale.current_item_ids, [102, 101, 103]);
+  db.close();
+});
+
+test("places an item by anchor and resets its order when Today membership changes", () => {
+  const { db, service } = createFixture();
+  db.prepare(`
+    INSERT INTO items (id, project_id, status, title, sort_order, is_today, owner)
+    VALUES (105, 1, 'todo', 'A new item', 4, 0, 'AI')
+  `).run();
+
+  const placed = service.placeItem({ projectId: 1, itemId: 105, afterItemId: 101 });
+  assert.equal(placed.ok, true);
+  assert.deepEqual(placed.item_ids, [101, 105, 103, 102]);
+
+  const beforeRemoval = db.prepare("SELECT * FROM items WHERE id=105").get();
+  db.prepare("UPDATE items SET is_today=0 WHERE id=105").run();
+  const afterRemoval = db.prepare("SELECT * FROM items WHERE id=105").get();
+  service.reconcileItem(beforeRemoval, afterRemoval);
+  assert.equal(db.prepare("SELECT today_queue_order FROM items WHERE id=105").get().today_queue_order, null);
+  assert.deepEqual(service.buildProjectStatus(1).items.map(item => item.id), [101, 103, 102]);
+
+  const beforeReadd = db.prepare("SELECT * FROM items WHERE id=105").get();
+  db.prepare("UPDATE items SET is_today=1 WHERE id=105").run();
+  const afterReadd = db.prepare("SELECT * FROM items WHERE id=105").get();
+  service.reconcileItem(beforeReadd, afterReadd);
+  assert.deepEqual(service.buildProjectStatus(1).items.map(item => item.id), [101, 103, 102, 105]);
+  db.close();
+});
+
+test("rejects queue reordering while an item is running", async () => {
+  const { db, service } = createFixture();
+  await service.dispatchNext({ projectId: 1 });
+  const result = service.reorderProject({ projectId: 1, itemIds: [102, 101, 103] });
+  assert.equal(result.reason, "queue_running");
   db.close();
 });
 

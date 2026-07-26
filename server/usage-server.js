@@ -217,7 +217,8 @@ try { db.exec("ALTER TABLE items ADD COLUMN review_emoji TEXT"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN owner TEXT"); } catch {}
 // Migration: owner 빵빵/기타 봇 → AI 통일 (owner 모델은 AI / hyungju 둘로 단순화)
 try { db.exec("UPDATE items SET owner='AI' WHERE owner IS NOT NULL AND owner NOT IN ('hyungju','AI')"); } catch {}
-// Migration: Today Task Queue dispatch metadata
+// Migration: Today Task Queue ordering + dispatch metadata
+try { db.exec("ALTER TABLE items ADD COLUMN today_queue_order INTEGER"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_nonce TEXT"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_message_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN dispatch_channel_id TEXT"); } catch {}
@@ -230,6 +231,7 @@ try { db.exec("ALTER TABLE items ADD COLUMN dispatch_last_error TEXT"); } catch 
 try {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_items_today_ai_queue ON items(is_today, owner, status, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_items_today_ai_queue_order ON items(project_id, is_today, owner, status, today_queue_order, id);
     CREATE INDEX IF NOT EXISTS idx_items_dispatch_nonce ON items(dispatch_nonce);
   `);
 } catch {}
@@ -1840,6 +1842,7 @@ function serializeTodoItem(i) {
     dispatch_started_at: i.dispatch_started_at || null,
     dispatch_attempt_count: i.dispatch_attempt_count || 0,
     dispatch_last_error: i.dispatch_last_error || null,
+    today_queue_order: i.today_queue_order ?? null,
   };
 }
 
@@ -2092,6 +2095,7 @@ const todayQueueService = createTodayQueueService({
   dispatchItem: dispatchTodoItemToDiscord,
   recordFailure: recordTodoDispatchFailure,
 });
+todayQueueService.initializeOrder();
 
 function buildTodayQueueStatus(projectId = null, extra = {}) {
   return todayQueueService.buildStatus({ projectId, extra });
@@ -3036,6 +3040,41 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
 
+    } else if (url.pathname.match(/^\/api\/projects\/\d+\/today-queue\/order$/) && req.method === "PUT") {
+      const projectId = parseInt(url.pathname.split("/")[3]);
+      const body = await parseBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const result = todayQueueService.reorderProject({ projectId, itemIds: payload.item_ids });
+      if (!result.ok) {
+        res.writeHead(result.status || 400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+        return;
+      }
+      broadcastSSE("items-changed", { action: "today-queue-reordered", projectId });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+
+    } else if (url.pathname.match(/^\/api\/projects\/\d+\/today-queue\/items$/) && req.method === "POST") {
+      const projectId = parseInt(url.pathname.split("/")[3]);
+      const body = await parseBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const itemId = Number(payload.item_id);
+      const beforeItemId = payload.before_item_id == null ? null : Number(payload.before_item_id);
+      const afterItemId = payload.after_item_id == null ? null : Number(payload.after_item_id);
+      if (!Number.isInteger(itemId) || (beforeItemId !== null && !Number.isInteger(beforeItemId)) || (afterItemId !== null && !Number.isInteger(afterItemId))) {
+        sendError(res, 400, "item ids must be integers");
+        return;
+      }
+      const result = todayQueueService.placeItem({ projectId, itemId, beforeItemId, afterItemId });
+      if (!result.ok) {
+        res.writeHead(result.status || 400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+        return;
+      }
+      broadcastSSE("items-changed", { action: "today-queue-item-placed", projectId, itemId });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+
     // --- Cron Jobs API ---
     } else if (url.pathname === "/cron-jobs" && req.method === "GET") {
       const jobs = db.prepare("SELECT * FROM cron_jobs ORDER BY job_name").all();
@@ -3352,11 +3391,15 @@ const server = http.createServer(async (req, res) => {
       const body = await parseBody(req);
       const { title, content, category_id, is_today, owner } = JSON.parse(body);
       if (!title) { sendError(res, 400, "title required"); return; }
-      const row = db.prepare(
-        `INSERT INTO items (project_id, category_id, title, content, is_today, owner, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM items WHERE project_id=?))
-         RETURNING *`
-      ).get(projectId, category_id || null, title, content || null, is_today ? 1 : 0, owner || null, projectId);
+      const row = db.transaction(() => {
+        const created = db.prepare(
+          `INSERT INTO items (project_id, category_id, title, content, is_today, owner, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM items WHERE project_id=?))
+           RETURNING *`
+        ).get(projectId, category_id || null, title, content || null, is_today ? 1 : 0, owner || null, projectId);
+        todayQueueService.reconcileItem(null, created);
+        return db.prepare("SELECT * FROM items WHERE id=?").get(created.id);
+      })();
       broadcastSSE("item-created", { id: row.id, projectId });
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
@@ -3366,6 +3409,18 @@ const server = http.createServer(async (req, res) => {
       const id = parseInt(url.pathname.split("/").pop());
       const body = await parseBody(req);
       const updates = JSON.parse(body);
+      const before = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      if (!before) { sendError(res, 404, "item not found"); return; }
+      const proposed = {
+        ...before,
+        ...updates,
+        is_today: updates.is_today === undefined ? before.is_today : (updates.is_today ? 1 : 0),
+      };
+      if (before.status === "in_progress" && todayQueueService.isQueueMember(before)
+          && (!todayQueueService.isQueueMember(proposed) || proposed.project_id !== before.project_id)) {
+        sendError(res, 409, "stop the running queue item before removing or moving it");
+        return;
+      }
       const fields = [];
       const values = [];
       for (const key of ["title", "content", "status", "is_today", "category_id", "project_id", "review_emoji", "owner"]) {
@@ -3378,8 +3433,12 @@ const server = http.createServer(async (req, res) => {
       if (updates.status === "review") { fields.push("review_count=COALESCE(review_count,0)+1"); }
       if (fields.length === 0) { sendError(res, 400, "no fields to update"); return; }
       values.push(id);
-      db.prepare(`UPDATE items SET ${fields.join(",")} WHERE id=?`).run(...values);
-      const row = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      const row = db.transaction(() => {
+        db.prepare(`UPDATE items SET ${fields.join(",")} WHERE id=?`).run(...values);
+        const updated = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+        todayQueueService.reconcileItem(before, updated);
+        return db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      })();
       broadcastSSE("item-updated", { id, projectId: row?.project_id });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
@@ -3389,8 +3448,19 @@ const server = http.createServer(async (req, res) => {
       const id = parseInt(url.pathname.split("/")[3]);
       const body = await parseBody(req);
       const { owner } = JSON.parse(body);
-      db.prepare("UPDATE items SET owner=? WHERE id=?").run(owner ?? null, id);
-      const row = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      const before = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      if (!before) { sendError(res, 404, "item not found"); return; }
+      const proposed = { ...before, owner: owner ?? null };
+      if (before.status === "in_progress" && todayQueueService.isQueueMember(before) && !todayQueueService.isQueueMember(proposed)) {
+        sendError(res, 409, "stop the running queue item before changing its owner");
+        return;
+      }
+      const row = db.transaction(() => {
+        db.prepare("UPDATE items SET owner=? WHERE id=?").run(owner ?? null, id);
+        const updated = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+        todayQueueService.reconcileItem(before, updated);
+        return db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      })();
       broadcastSSE("item-updated", { id, projectId: row?.project_id });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(row));
@@ -3398,9 +3468,17 @@ const server = http.createServer(async (req, res) => {
     // DELETE /api/items/:id — 아이템 삭제
     } else if (url.pathname.match(/^\/api\/items\/\d+$/) && req.method === "DELETE") {
       const id = parseInt(url.pathname.split("/").pop());
-      const item = db.prepare("SELECT project_id FROM items WHERE id=?").get(id);
-      db.prepare("DELETE FROM items WHERE id=?").run(id);
-      broadcastSSE("item-deleted", { id, projectId: item?.project_id });
+      const item = db.prepare("SELECT * FROM items WHERE id=?").get(id);
+      if (!item) { sendError(res, 404, "item not found"); return; }
+      if (item.status === "in_progress" && todayQueueService.isQueueMember(item)) {
+        sendError(res, 409, "stop the running queue item before deleting it");
+        return;
+      }
+      db.transaction(() => {
+        db.prepare("DELETE FROM items WHERE id=?").run(id);
+        todayQueueService.removeDeletedItem(item);
+      })();
+      broadcastSSE("item-deleted", { id, projectId: item.project_id });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
 
@@ -3412,7 +3490,13 @@ const server = http.createServer(async (req, res) => {
         const opts = JSON.parse(body);
         if (opts.done_only) filter += " AND status = 'done'";
       } catch {}
-      const info = db.prepare(`UPDATE items SET is_today = 0 WHERE ${filter}`).run();
+      filter += " AND status<>'in_progress'";
+      const affectedProjectIds = db.prepare(`SELECT DISTINCT project_id FROM items WHERE ${filter}`).all().map(row => row.project_id);
+      const info = db.transaction(() => {
+        const updated = db.prepare(`UPDATE items SET is_today=0, today_queue_order=NULL WHERE ${filter}`).run();
+        affectedProjectIds.forEach(projectId => todayQueueService.normalizeProjectOrder(projectId));
+        return updated;
+      })();
       broadcastSSE("items-changed", { action: "untoday-all" });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ cleared: info.changes }));
@@ -3421,7 +3505,10 @@ const server = http.createServer(async (req, res) => {
     } else if (url.pathname.match(/^\/api\/projects\/\d+\/clear-done$/) && req.method === "POST") {
       const projectId = parseInt(url.pathname.split("/")[3]);
       const done = db.prepare("SELECT COUNT(*) as cnt FROM items WHERE project_id=? AND status='done'").get(projectId);
-      db.prepare("UPDATE items SET status='archived', updated_at=datetime('now') WHERE project_id=? AND status='done'").run(projectId);
+      db.transaction(() => {
+        db.prepare("UPDATE items SET status='archived', today_queue_order=NULL, updated_at=datetime('now') WHERE project_id=? AND status='done'").run(projectId);
+        todayQueueService.normalizeProjectOrder(projectId);
+      })();
       // 빈 카테고리 삭제 (모든 status 아이템 참조 확인 — FK 제약)
       db.prepare(
         `DELETE FROM categories WHERE project_id=? AND id NOT IN (SELECT DISTINCT category_id FROM items WHERE project_id=? AND category_id IS NOT NULL)`
