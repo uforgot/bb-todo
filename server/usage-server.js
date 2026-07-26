@@ -29,6 +29,8 @@ const { createTodayQueueService } = require("./today-queue-service");
 const { createTodayQueueResultHandler } = require("./today-queue-result-handler");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { validateGitCommitDeclaration } = require("./today-queue-policy");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { buildBoundedDiscordPrompt } = require("./today-queue-prompt");
 
 const PORT = process.env.USAGE_PORT || 3100;
 const API_KEY = process.env.USAGE_API_KEY;
@@ -1921,12 +1923,6 @@ function collectTodoItemDispatchFiles(item) {
   return files;
 }
 
-function truncateForDiscord(text, max = 1100) {
-  const value = String(text || "").trim();
-  if (value.length <= max) return value;
-  return `${value.slice(0, max - 80).trim()}\n\n… [두두 item content가 길어서 Discord dispatch 메시지에서 일부 생략됨]`;
-}
-
 function createDiscordMessageUrl(channelId, messageId) {
   if (!channelId || !messageId) return null;
   return `https://discord.com/channels/${GUILD_ID}/${channelId}/${messageId}`;
@@ -1938,7 +1934,7 @@ function createTodoQueueNonce() {
 
 function buildTodoQueueDispatchPrompt(item, { nonce, targetBot }) {
   const { text } = splitTodoContentAttachments(item.content);
-  const body = truncateForDiscord(text || "(content 없음)");
+  const body = text || "(content 없음)";
   const attachmentCount = collectTodoItemDispatchFiles(item).length;
   const marker = [
     "DUDU_RESULT_V1",
@@ -1950,34 +1946,38 @@ function buildTodoQueueDispatchPrompt(item, { nonce, targetBot }) {
     "evidence: <실제로 확인한 명령/파일/스크린샷/결과 요약>",
   ].join("\n");
 
-  return [
-    `<@${targetBot.discordUserId}>`,
-    "[DUDU_TASK_V1]",
-    `project: ${item.project_emoji || ""} ${item.project_name || item.project_id || ""}`.trim(),
-    item.category_name ? `category: ${item.category_name}` : null,
-    `item_id: ${item.id}`,
-    `nonce: ${nonce}`,
-    `assignee: ${targetBot.displayName} (${targetBot.key})`,
-    `title: ${item.title}`,
-    attachmentCount ? `attachments: ${attachmentCount}` : "attachments: 0",
-    "",
-    "[task_content]",
+  return buildBoundedDiscordPrompt({
+    beforeLines: [
+      `<@${targetBot.discordUserId}>`,
+      "[DUDU_TASK_V1]",
+      `project: ${item.project_emoji || ""} ${item.project_name || item.project_id || ""}`.trim(),
+      item.category_name ? `category: ${item.category_name}` : null,
+      `item_id: ${item.id}`,
+      `nonce: ${nonce}`,
+      `assignee: ${targetBot.displayName} (${targetBot.key})`,
+      `title: ${item.title}`,
+      attachmentCount ? `attachments: ${attachmentCount}` : "attachments: 0",
+      "",
+      "[task_content]",
+    ],
     body,
-    "",
-    "[rules]",
-    "- 이 메시지의 item 하나만 처리해.",
-    "- 완료했다고 말만 하지 말고, 실제 변경/검증 결과를 evidence에 적어.",
-    "- 코드·문서·설정 등 git repository 파일을 변경한 작업은 검증 후 해당 item 변경만 stage해서 반드시 commit해. 기존의 관련 없는 변경은 포함하지 마.",
-    "- repository 파일을 변경하지 않은 작업만 git_commit에 `not_applicable: 이유`를 적을 수 있어. 그 외에는 실제 commit SHA를 적어.",
-    "- 작업이 끝나면 답변 마지막에 아래 marker를 정확히 채워서 보내.",
-    "- marker가 없거나 item_id/nonce가 다르면 두두 큐는 다음 항목으로 진행하지 않는다.",
-    `- 선행 관계 때문에 대기 순서를 바꿔야 하면 \`~/.openclaw/workspace/scripts/todo.sh queue move ${item.project_id} <item_id> --before|--after <anchor_item_id>\`를 사용해. 실행 중 항목은 고정되고 todo 대기 항목만 이동된다.`,
-    "- done 처리는 하지 않는다. 큐는 ready_for_review marker를 받으면 review까지만 넘긴다.",
-    "",
-    "```text",
-    marker,
-    "```",
-  ].filter(Boolean).join("\n");
+    afterLines: [
+      "",
+      "[rules]",
+      "- 이 메시지의 item 하나만 처리해.",
+      "- 완료했다고 말만 하지 말고, 실제 변경/검증 결과를 evidence에 적어.",
+      "- 코드·문서·설정 등 git repository 파일을 변경한 작업은 검증 후 해당 item 변경만 stage해서 반드시 commit해. 기존의 관련 없는 변경은 포함하지 마.",
+      "- repository 파일을 변경하지 않은 작업만 git_commit에 `not_applicable: 이유`를 적을 수 있어. 그 외에는 실제 commit SHA를 적어.",
+      "- 작업이 끝나면 답변 마지막에 아래 marker를 정확히 채워서 보내.",
+      "- marker가 없거나 item_id/nonce가 다르면 두두 큐는 다음 항목으로 진행하지 않는다.",
+      `- 선행 관계 때문에 대기 순서를 바꿔야 하면 \`~/.openclaw/workspace/scripts/todo.sh queue move ${item.project_id} <item_id> --before|--after <anchor_item_id>\`를 사용해. 실행 중 항목은 고정되고 todo 대기 항목만 이동된다.`,
+      "- done 처리는 하지 않는다. 큐는 ready_for_review marker를 받으면 review까지만 넘긴다.",
+      "",
+      "```text",
+      marker,
+      "```",
+    ],
+  });
 }
 
 function sendDiscordChannelMessage(channelId, { content, files = [], allowedUserIds = [] }, botToken) {
