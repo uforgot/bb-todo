@@ -2151,6 +2151,7 @@ function startTodayQueueBridge() {
     require("./today-queue-bridge").start({
       token: TODAY_QUEUE_BRIDGE_TOKEN,
       onResult: handleTodayQueueResultMarkerMessage,
+      getActiveItems: () => todayQueueService.getItems(["in_progress"]),
     });
   } catch (error) {
     console.error("[today-queue-bridge] failed to start:", error?.message || error);

@@ -21,6 +21,16 @@ test("accepts a git commit SHA declaration", () => {
   assert.equal(validateGitCommitDeclaration(raw).valid, true);
 });
 
+test("accepts an indented YAML git commit declaration", () => {
+  const raw = [
+    "DUDU_RESULT_V1:",
+    "  status: ready_for_review",
+    "  git_commit: a1B2c3D",
+  ].join("\n");
+
+  assert.equal(validateGitCommitDeclaration(raw).valid, true);
+});
+
 test("accepts not_applicable only with a reason", () => {
   const valid = validateGitCommitDeclaration(
     "DUDU_RESULT_V1\ngit_commit: not_applicable: research-only task; no repository files changed",

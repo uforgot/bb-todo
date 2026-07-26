@@ -3,7 +3,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const { Events } = require("discord.js");
-const { attach, parseDuduResultMarker } = require("./today-queue-bridge");
+const { attach, isCompleteResultMarker, parseDuduResultMarker } = require("./today-queue-bridge");
 
 const marker = [
   "DUDU_RESULT_V1",
@@ -30,6 +30,98 @@ test("parseDuduResultMarker parses a complete result block", () => {
       raw: marker,
     },
   );
+});
+
+test("accepts an indented YAML result block", () => {
+  const parsed = parseDuduResultMarker([
+    "DUDU_RESULT_V1:",
+    "  run_id: today-queue",
+    "  item_id: 1043",
+    "  nonce: 8e9a4d1ad7a55e7d5bd23685",
+    "  status: ready_for_review",
+    "  git_commit: abc1234",
+  ].join("\n"));
+
+  assert.equal(isCompleteResultMarker(parsed), true);
+});
+
+test("attach recovers a missed result marker for an active item", async () => {
+  const client = new EventEmitter();
+  const accepted = [];
+  const bridge = attach(client, {
+    onResult: async (msg, parsed) => {
+      accepted.push({ id: msg.id, marker: parsed });
+      return { accepted: true };
+    },
+    getActiveItems: async () => [{ id: 1043, dispatch_channel_id: "channel-1" }],
+    fetchMessages: async (channelId) => [{
+      id: "100",
+      channelId,
+      content: marker,
+      author: { id: "bot-1", bot: true, tag: "worker#0001" },
+    }],
+    recoveryIntervalMs: 0,
+    logger: { log() {}, error() {} },
+  });
+
+  await bridge.recoverActiveResults();
+
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].id, "100");
+  assert.equal(accepted[0].marker.item_id, 1043);
+});
+
+test("attach paginates recovery back to the active dispatch message", async () => {
+  const client = new EventEmitter();
+  const accepted = [];
+  const fetchOptions = [];
+  client.channels = {
+    fetch: async () => ({
+      messages: {
+        fetch: async (options) => {
+          fetchOptions.push(options);
+          if (!options.before) {
+            return new Map(Array.from({ length: 100 }, (_, index) => {
+              const id = String(200 + index);
+              return [id, {
+                id,
+                channelId: "channel-1",
+                content: "progress",
+                author: { id: "bot-1", bot: true },
+              }];
+            }));
+          }
+          return new Map([["150", {
+            id: "150",
+            channelId: "channel-1",
+            content: marker,
+            author: { id: "bot-1", bot: true, tag: "worker#0001" },
+          }]]);
+        },
+      },
+    }),
+  };
+
+  const bridge = attach(client, {
+    onResult: async (msg, parsed) => {
+      accepted.push({ id: msg.id, marker: parsed });
+      return { accepted: true };
+    },
+    getActiveItems: async () => [{
+      id: 1043,
+      dispatch_channel_id: "channel-1",
+      dispatch_message_id: "100",
+    }],
+    recoveryIntervalMs: 0,
+    logger: { log() {}, error() {} },
+  });
+
+  await bridge.recoverActiveResults();
+
+  assert.equal(fetchOptions.length, 2);
+  assert.equal(fetchOptions[1].before, "200");
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].id, "150");
 });
 
 test("attach handles a marker added by Discord message streaming edit", async () => {

@@ -1,6 +1,6 @@
 function parseGitCommitDeclaration(rawMarker) {
   const text = String(rawMarker || "").replace(/\r/g, "");
-  const match = text.match(/^git_commit\s*:\s*(.+)$/im);
+  const match = text.match(/^\s*git_commit\s*:\s*(.+)$/im);
   if (!match) return null;
 
   const value = match[1].trim();

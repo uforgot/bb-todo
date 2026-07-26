@@ -2,12 +2,16 @@
 // Keeps voice-bridge's request/reply state out of queue progression.
 
 /* eslint-disable @typescript-eslint/no-require-imports */
+const https = require("node:https");
 const { Client, GatewayIntentBits, Events } = require("discord.js");
 
 const RESULT_MARKER = "DUDU_RESULT_V1";
 const TASK_MARKER = "[DUDU_TASK_V1]";
 const FRAGMENT_TTL_MS = 2 * 60 * 1000;
 const MAX_FRAGMENT_MESSAGES = 4;
+const RECOVERY_INTERVAL_MS = 30 * 1000;
+const RECOVERY_MESSAGE_LIMIT = 100;
+const RECOVERY_MAX_PAGES = 10;
 
 function normalizeMarkerKey(key) {
   return String(key || "").trim().toLowerCase().replace(/-/g, "_");
@@ -52,7 +56,7 @@ function isCompleteResultMarker(marker) {
       && marker.item_id
       && marker.nonce
       && marker.status
-      && /^git_commit\s*:\s*\S+/im.test(marker.raw),
+      && /^\s*git_commit\s*:\s*\S+/im.test(marker.raw),
   );
 }
 
@@ -62,12 +66,51 @@ function messageFragmentKey(msg) {
   return channelId && authorId ? `${channelId}:${authorId}` : "";
 }
 
-function attach(client, { onResult, isAllowedChannel, logger = console } = {}) {
+function fetchDiscordChannelMessages(token, channelId, options = {}) {
+  const query = new URLSearchParams({ limit: String(options.limit || RECOVERY_MESSAGE_LIMIT) });
+  if (options.before) query.set("before", options.before);
+  return new Promise((resolve, reject) => {
+    const req = https.get({
+      hostname: "discord.com",
+      path: `/api/v10/channels/${channelId}/messages?${query}`,
+      headers: { Authorization: `Bot ${token}` },
+    }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", chunk => { body += chunk; });
+      res.on("end", () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`Discord message recovery GET failed: ${res.statusCode}`));
+          return;
+        }
+        try {
+          const messages = JSON.parse(body);
+          resolve(messages.map(msg => ({ ...msg, channelId: msg.channel_id || channelId })));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    req.setTimeout(10_000, () => req.destroy(new Error("Discord message recovery GET timed out")));
+    req.on("error", reject);
+  });
+}
+
+function attach(client, {
+  onResult,
+  isAllowedChannel,
+  getActiveItems,
+  fetchMessages,
+  recoveryIntervalMs = RECOVERY_INTERVAL_MS,
+  logger = console,
+} = {}) {
   if (!client) throw new Error("today-queue-bridge.attach: client required");
   if (typeof onResult !== "function") throw new Error("today-queue-bridge.attach: onResult callback required");
 
   const pendingFragments = new Map();
   let fragmentSequence = 0;
+  let recoveryRunning = false;
+  let recoveryAttempt = 0;
 
   const processMessage = async (candidate) => {
     let msg = candidate;
@@ -114,14 +157,14 @@ function attach(client, { onResult, isAllowedChannel, logger = console } = {}) {
           .join("\n")
         : content;
       const marker = parseDuduResultMarker(combinedContent);
-      if (!marker) return;
-      if (!isCompleteResultMarker(marker)) return;
+      if (!marker) return null;
+      if (!isCompleteResultMarker(marker)) return null;
 
       if (key) pendingFragments.delete(key);
 
       if (typeof isAllowedChannel === "function") {
         const allowed = await isAllowedChannel(msg, marker);
-        if (!allowed) return;
+        if (!allowed) return null;
       }
       const result = await onResult(msg, marker);
       if (result?.accepted) {
@@ -129,8 +172,77 @@ function attach(client, { onResult, isAllowedChannel, logger = console } = {}) {
       } else if (result?.reason) {
         logger.log(`[today-queue-bridge] ignored item #${marker.item_id || "?"}: ${result.reason}`);
       }
+      return result || null;
     } catch (error) {
       logger.error("[today-queue-bridge] result handler error:", error?.message || error);
+    }
+  };
+
+  const recoverActiveResults = async () => {
+    if (recoveryRunning || typeof getActiveItems !== "function") return;
+    recoveryRunning = true;
+    try {
+      const activeItems = await getActiveItems();
+      recoveryAttempt += 1;
+      const activeIds = new Set((activeItems || []).map(item => Number(item.id)).filter(Number.isInteger));
+      const channels = new Map();
+      for (const item of activeItems || []) {
+        if (!item.dispatch_channel_id) continue;
+        const current = channels.get(item.dispatch_channel_id);
+        const dispatchId = item.dispatch_message_id || null;
+        if (!current || (dispatchId && (!current.earliestDispatchId || BigInt(dispatchId) < BigInt(current.earliestDispatchId)))) {
+          channels.set(item.dispatch_channel_id, { earliestDispatchId: dispatchId });
+        }
+      }
+      if (recoveryAttempt === 1) {
+        logger.log(`[today-queue-bridge] recovery scan active=${activeItems?.length || 0} channels=${channels.size}`);
+      }
+
+      for (const [channelId, { earliestDispatchId }] of channels) {
+        const channel = typeof fetchMessages === "function" ? null : await client.channels.fetch(channelId);
+        if (!fetchMessages && !channel?.messages?.fetch) continue;
+        let before;
+        for (let page = 0; page < RECOVERY_MAX_PAGES; page += 1) {
+          const options = {
+            limit: RECOVERY_MESSAGE_LIMIT,
+            ...(before ? { before } : {}),
+          };
+          const fetched = typeof fetchMessages === "function"
+            ? await fetchMessages(channelId, options)
+            : await channel.messages.fetch(options);
+          const pageMessages = Array.isArray(fetched) ? fetched : [...fetched.values()];
+          if (!pageMessages.length) break;
+          const candidates = pageMessages
+            .filter(msg => {
+              const parsed = parseDuduResultMarker(msg.content);
+              return parsed && activeIds.has(parsed.item_id);
+            })
+            .sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1));
+          if (recoveryAttempt === 1) {
+            logger.log(`[today-queue-bridge] recovery page=${page + 1} messages=${pageMessages.length} candidates=${candidates.length}`);
+          }
+          let accepted = false;
+          for (const msg of candidates) {
+            const result = await processMessage(msg);
+            if (result?.accepted) {
+              accepted = true;
+              break;
+            }
+          }
+          if (accepted) break;
+
+          const oldestId = pageMessages.reduce((oldest, msg) => (
+            !oldest || BigInt(msg.id) < BigInt(oldest) ? msg.id : oldest
+          ), null);
+          if (!oldestId || pageMessages.length < RECOVERY_MESSAGE_LIMIT) break;
+          if (earliestDispatchId && BigInt(oldestId) <= BigInt(earliestDispatchId)) break;
+          before = oldestId;
+        }
+      }
+    } catch (error) {
+      logger.error("[today-queue-bridge] recovery scan error:", error?.message || error);
+    } finally {
+      recoveryRunning = false;
     }
   };
 
@@ -140,11 +252,20 @@ function attach(client, { onResult, isAllowedChannel, logger = console } = {}) {
   client.on(Events.MessageUpdate, (_oldMessage, newMessage) => {
     void processMessage(newMessage);
   });
+  client.once(Events.ClientReady, () => {
+    void recoverActiveResults();
+  });
+
+  const recoveryTimer = typeof getActiveItems === "function" && recoveryIntervalMs > 0
+    ? setInterval(() => void recoverActiveResults(), recoveryIntervalMs)
+    : null;
+  recoveryTimer?.unref?.();
 
   logger.log("[today-queue-bridge] attached to discord client");
+  return { processMessage, recoverActiveResults, stop: () => recoveryTimer && clearInterval(recoveryTimer) };
 }
 
-function start({ token, onResult, isAllowedChannel, logger = console } = {}) {
+function start({ token, onResult, isAllowedChannel, getActiveItems, recoveryIntervalMs, logger = console } = {}) {
   if (!token) {
     logger.warn("[today-queue-bridge] token missing — disabled");
     return null;
@@ -158,7 +279,14 @@ function start({ token, onResult, isAllowedChannel, logger = console } = {}) {
     ],
   });
 
-  attach(client, { onResult, isAllowedChannel, logger });
+  attach(client, {
+    onResult,
+    isAllowedChannel,
+    getActiveItems,
+    fetchMessages: (channelId, options) => fetchDiscordChannelMessages(token, channelId, options),
+    recoveryIntervalMs,
+    logger,
+  });
 
   client.once(Events.ClientReady, (readyClient) => {
     logger.log(`[today-queue-bridge] listener ready as ${readyClient.user.tag} (${readyClient.user.id})`);
