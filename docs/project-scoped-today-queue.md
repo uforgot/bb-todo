@@ -224,3 +224,38 @@ Queue 실행 이력은 `server/today-queue-history-schema.js`가 서버 시작 �
 - A 결과 marker는 A의 다음 item만 시작한다.
 - A Stop은 B를 멈추지 않는다.
 - empty, missing target, dispatch failure, duplicate marker가 자동 skip이나 중복 dispatch를 만들지 않는다.
+
+## Phase 3 graph 필요성 결정
+
+결정일: 2026-07-27
+
+### 관찰된 실행 관계
+
+판단 근거는 실제 Today Queue row, 현재 status, dispatch attempt metadata, Phase 2 disposable history QA다. 시각적으로 graph가 좋아 보인다는 이유로 관계를 추측하지 않는다.
+
+- **주된 사례는 linear sequence다.** Queue Dashboard `#1141–#1151`은 한 프로젝트 순서대로 진행했고 MCP Fig `#1152–#1160`도 같은 형태다. 앞 task의 commit·문서 산출물을 다음 task가 이어받는다.
+- **프로젝트는 병렬이지만 서로 독립적이다.** 실제 status에서 MCP Fig `#1157`과 Queue Dashboard `#1151`이 별도 lane에서 동시에 active였다. task content와 result listener 어디에도 cross-project prerequisite는 없었다.
+- **같은 프로젝트의 aggregate gate 한 건은 현재 linear order로 표현된다.** MCP Fig `#1159`는 capability, authoring, design-system, visual, operations 항목이 모두 `review` 이상이어야 한다. 해당 항목들이 같은 프로젝트에서 `#1159` 앞에 순서대로 있으므로 fan-out이나 join 없이 현재 sequence가 조건을 충족한다. 아직 graph edge가 필요한 사례는 아니다.
+- **manual approval gate 한 건은 실제 linear model 한계다.** MCP Fig `#1160`은 `#1159`가 `done`일 때만 실행해야 하지만 Queue는 선행 task가 `review`에 도달하면 다음 `todo`를 dispatch한다. 관찰 시점의 `#1160`은 `is_today=1`, queue order 9라서 개입하지 않으면 `#1159`가 `review`가 된 직후 실행될 수 있다. Queue order만으로는 둘을 구분할 수 없다. 별도 eligibility 규칙이 생기기 전에는 이런 task를 사용자 승인 전까지 Today Queue에 넣지 않는 방식으로 막아야 한다.
+- **retry는 workflow branch가 아니라 attempt다.** 실제 metadata에 `#1150`, `#1138`, `#1106`과 이전 QA·content task의 재시도가 있다. Phase 2 history가 각 attempt와 error를 보존한다. 자동 backoff, 대체 worker routing, conditional recovery branch가 필요했던 사례는 없었다.
+- **branching, true join, conditional edge, cross-project dependency, reusable subflow가 필요한 실제 사례는 없었다.** 반복되는 verification checklist는 task 작성 template이지 runtime subflow가 아니다.
+
+### 현재 linear model의 한계
+
+- `today_queue_order`는 우선순위와 선행 관계를 함께 표현하므로 왜 기다려야 하는지 구분할 수 없다.
+- runner는 `todo → in_progress → review`를 알지만 후속 task가 사용자 소유 상태인 `done`을 요구한다고 선언할 수 없다.
+- 한 프로젝트 안의 독립 작업도 직렬화하거나 프로젝트를 나눠야 하며 같은 run 안의 fan-out은 없다.
+- result 값에 따라 task를 skip하거나 다른 경로로 보낼 수 없다.
+
+이 중 현재 실제 사례가 있는 것은 `review`와 `done`을 구분하는 approval gate뿐이다. 나머지는 관찰된 요구가 아니라 capability boundary다.
+
+### 결정
+
+Dashboard는 read-only linear 구조를 유지한다.
+
+- React Flow를 추가하지 않는다. 현재 topology에는 DOM/CSS connector가 더 단순하고 정확하다.
+- 일반 workflow engine을 추가하지 않는다.
+- graph-authoring contract나 추측 DAG schema를 만들지 않는다.
+- `#1160` 사례는 graph authoring과 분리된 좁은 Queue eligibility 기능 후보로만 남긴다. item/API 동작을 별도로 정의·테스트하거나 같은 approval-gated 사례가 다시 관찰되기 전에는 구현하지 않는다.
+
+graph authoring은 실제 run에서 프로젝트 순서로 안전하게 표현할 수 없는 관계가 확인될 때만 다시 검토한다. 조건은 parallel predecessor join, result-driven branch, cross-project prerequisite, 독립 실행 상태를 가진 reusable subflow 중 하나다. node·edge를 설계하기 전에 해당 item ID, 실제 blocked/selected 결과, 기대 continuation을 먼저 기록한다.
