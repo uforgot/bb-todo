@@ -5,6 +5,7 @@ import { useMemo, useRef, useState } from "react";
 import { AlertCircle, RefreshCw, Workflow } from "lucide-react";
 import { DashboardSkeleton } from "@/components/dashboard/dashboard-skeleton";
 import { ProjectSwimlane } from "@/components/dashboard/project-swimlane";
+import { RunHistory } from "@/components/dashboard/run-history";
 import { TaskRunDetail } from "@/components/dashboard/task-run-detail";
 import { useTodayQueueDashboard } from "@/hooks/use-today-queue-dashboard";
 import type { TodayQueueItem } from "@/lib/today-queue-types";
@@ -96,65 +97,78 @@ export function QueueDashboard() {
       </header>
 
       <main className="w-full max-w-none px-3 py-4 md:px-6 md:py-6">
-        {hasStaleData && (
-          <div
-            className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-background p-3"
-            role="status"
-          >
-            <p className="flex items-center gap-2 text-sm">
-              <AlertCircle className="size-4 text-destructive" aria-hidden="true" />
-              Showing the last known state. {error?.message}
-            </p>
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              className="min-h-9 rounded-md border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              Try again
-            </button>
-          </div>
-        )}
-
-        {isLoading ? (
-          <DashboardSkeleton />
-        ) : isError && sortedProjects.length === 0 ? (
-          <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border bg-card p-8 text-center">
-            <AlertCircle className="size-8 text-destructive" aria-hidden="true" />
-            <h2 className="mt-3 text-balance font-semibold">
-              Queue data is unavailable
+        <section aria-labelledby="current-execution-heading">
+          <div className="mb-4">
+            <h2 id="current-execution-heading" className="text-base font-semibold">
+              Current execution
             </h2>
-            <p className="mt-1 text-pretty text-sm text-muted-foreground">
-              {error?.message || "The current execution state could not be loaded."}
+            <p className="mt-1 text-sm text-muted-foreground">
+              Live item states from each project queue.
             </p>
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              className="mt-4 min-h-10 rounded-md border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          </div>
+
+          {hasStaleData && (
+            <div
+              className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-background p-3"
+              role="status"
             >
-              Try again
-            </button>
-          </div>
-        ) : sortedProjects.length === 0 ? (
-          <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border bg-card p-8 text-center">
-            <p className="text-sm text-muted-foreground">No AI tasks are queued.</p>
-            <Link
-              href="/"
-              className="mt-4 inline-flex min-h-10 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              Open Todo
-            </Link>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {sortedProjects.map((project) => (
-              <ProjectSwimlane
-                key={project.project_id}
-                project={project}
-                onSelectTask={selectTask}
-              />
-            ))}
-          </div>
-        )}
+              <p className="flex items-center gap-2 text-sm">
+                <AlertCircle className="size-4 text-destructive" aria-hidden="true" />
+                Showing the last known state. {error?.message}
+              </p>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                className="min-h-9 rounded-md border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Try again
+              </button>
+            </div>
+          )}
+
+          {isLoading ? (
+            <DashboardSkeleton />
+          ) : isError && sortedProjects.length === 0 ? (
+            <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border bg-card p-8 text-center">
+              <AlertCircle className="size-8 text-destructive" aria-hidden="true" />
+              <h2 className="mt-3 text-balance font-semibold">
+                Queue data is unavailable
+              </h2>
+              <p className="mt-1 text-pretty text-sm text-muted-foreground">
+                {error?.message || "The current execution state could not be loaded."}
+              </p>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                className="mt-4 min-h-10 rounded-md border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Try again
+              </button>
+            </div>
+          ) : sortedProjects.length === 0 ? (
+            <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border bg-card p-8 text-center">
+              <p className="text-sm text-muted-foreground">No AI tasks are queued.</p>
+              <Link
+                href="/"
+                className="mt-4 inline-flex min-h-10 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Open Todo
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {sortedProjects.map((project) => (
+                <ProjectSwimlane
+                  key={project.project_id}
+                  project={project}
+                  onSelectTask={selectTask}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <RunHistory currentProjects={sortedProjects} />
       </main>
 
       <TaskRunDetail
