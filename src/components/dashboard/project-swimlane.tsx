@@ -1,8 +1,12 @@
-import type { TodayQueueProjectStatus } from "@/lib/today-queue-types";
+import type {
+  TodayQueueItem,
+  TodayQueueProjectStatus,
+} from "@/lib/today-queue-types";
 import { TaskRunNode } from "@/components/dashboard/task-run-node";
 
 interface ProjectSwimlaneProps {
   project: TodayQueueProjectStatus;
+  onSelectTask: (item: TodayQueueItem, trigger: HTMLButtonElement) => void;
 }
 
 function sortByQueueOrder(project: TodayQueueProjectStatus) {
@@ -19,7 +23,10 @@ function sortByQueueOrder(project: TodayQueueProjectStatus) {
     .map(({ item }) => item);
 }
 
-export function ProjectSwimlane({ project }: ProjectSwimlaneProps) {
+export function ProjectSwimlane({
+  project,
+  onSelectTask,
+}: ProjectSwimlaneProps) {
   const items = sortByQueueOrder(project);
 
   return (
@@ -78,7 +85,11 @@ export function ProjectSwimlane({ project }: ProjectSwimlaneProps) {
               key={item.id}
               className="flex min-w-0 flex-col md:min-w-max md:flex-row md:items-center"
             >
-              <TaskRunNode item={item} fallbackOrder={index + 1} />
+              <TaskRunNode
+                item={item}
+                fallbackOrder={index + 1}
+                onSelect={onSelectTask}
+              />
               {index < items.length - 1 && (
                 <span
                   className="ml-3 h-5 w-px bg-border md:ml-0 md:h-px md:w-8 md:shrink-0"

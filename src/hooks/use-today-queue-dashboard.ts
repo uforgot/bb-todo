@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import useSWR from "swr";
 import type { TodayQueueStatusResponse } from "@/lib/today-queue-types";
 
@@ -16,14 +16,20 @@ async function fetchQueueStatus(url: string): Promise<TodayQueueStatusResponse> 
 }
 
 export function useTodayQueueDashboard(projectId?: number) {
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const query = projectId ? `?project_id=${projectId}` : "";
   const { data, error, isLoading, isValidating, mutate } =
     useSWR<TodayQueueStatusResponse>(
       `/api/today-queue/status${query}`,
       fetchQueueStatus,
       {
+        refreshInterval: 3000,
+        refreshWhenHidden: false,
+        refreshWhenOffline: false,
         revalidateOnFocus: true,
         revalidateOnReconnect: true,
+        keepPreviousData: true,
+        onSuccess: () => setLastUpdatedAt(new Date()),
       }
     );
 
@@ -34,6 +40,7 @@ export function useTodayQueueDashboard(projectId?: number) {
   return {
     status: data ?? null,
     projects: data?.projects ?? [],
+    lastUpdatedAt,
     isLoading,
     isRefreshing: isValidating && Boolean(data),
     isError: Boolean(error),
