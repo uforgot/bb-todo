@@ -6,12 +6,17 @@
 // 사진 face 인식은 bb-app(Ably voice) 경로에서만 처리하므로 여기선 다루지 않는다.
 // [voice] prefix 메시지와 봇 응답 캡처는 voice-bridge가 처리한다.
 
-const { Events } = require("discord.js");
+/* eslint-disable @typescript-eslint/no-require-imports */
+const { Events, MessageType } = require("discord.js");
 
 const vb = require("./voice-bridge");
 
 const FOLLOWUP_RELAY_ENABLED = /^true$/i.test(process.env.RELAY_FOLLOWUP_ENABLED || "");
 const MAX_PREVIOUS_BOT_AGE_MS = 3 * 60 * 60 * 1000;
+
+function isRelayableMessageType(msg) {
+  return msg.type == null || msg.type === MessageType.Default;
+}
 
 function isVoicePrefix(msg) {
   return String(msg.content || "").trim().toLowerCase().startsWith("[voice]");
@@ -101,6 +106,8 @@ async function relayAsCopiedMessage(msg, targetBot, previousBotMessage) {
 
 async function relayUnmentionedFollowup(msg) {
   if (msg.author.bot || msg.webhookId != null) return false;
+  // Thread creation/starter notifications are Discord system messages, not user follow-ups.
+  if (!isRelayableMessageType(msg)) return false;
   // Discord replies to a bot already reach the target agent through OpenClaw.
   // Relaying them here creates a duplicate listener mention for the same user message.
   if (msg.reference?.messageId) return false;
@@ -144,4 +151,4 @@ function attach(client, { isWatchedVoiceChannel } = {}) {
   console.log("[relay-bridge] attached to discord client");
 }
 
-module.exports = { attach };
+module.exports = { attach, isRelayableMessageType };
