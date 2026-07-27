@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const Database = require("better-sqlite3");
 const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
+const { createTodayQueueHistoryService } = require("./today-queue-history-service");
 const { createTodayQueueRunLifecycle } = require("./today-queue-run-lifecycle");
 const { createTodayQueueService } = require("./today-queue-service");
 const { createTodayQueueResultHandler } = require("./today-queue-result-handler");
@@ -27,10 +31,15 @@ function marker(itemId, nonce, gitCommit = "abc1234") {
   };
 }
 
-function createFixture({ failOnce = [], singleItemProject = false } = {}) {
-  const db = new Database(":memory:");
+function createFixture({
+  failOnce = [],
+  singleItemProject = false,
+  databasePath = ":memory:",
+  idPrefix = "",
+} = {}) {
+  const db = new Database(databasePath);
   db.exec(`
-    CREATE TABLE projects (
+    CREATE TABLE IF NOT EXISTS projects (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
       emoji TEXT,
@@ -39,13 +48,13 @@ function createFixture({ failOnce = [], singleItemProject = false } = {}) {
       discord_thread_id TEXT,
       default_ai_bot_key TEXT
     );
-    CREATE TABLE categories (
+    CREATE TABLE IF NOT EXISTS categories (
       id INTEGER PRIMARY KEY,
       project_id INTEGER NOT NULL,
       name TEXT NOT NULL,
       sort_order INTEGER DEFAULT 0
     );
-    CREATE TABLE items (
+    CREATE TABLE IF NOT EXISTS items (
       id INTEGER PRIMARY KEY,
       project_id INTEGER NOT NULL,
       category_id INTEGER,
@@ -69,12 +78,12 @@ function createFixture({ failOnce = [], singleItemProject = false } = {}) {
       dispatch_attempt_count INTEGER DEFAULT 0,
       dispatch_last_error TEXT
     );
-    INSERT INTO projects (
+    INSERT OR IGNORE INTO projects (
       id, name, emoji, sort_order, discord_channel_id, default_ai_bot_key
     ) VALUES
       (1, 'Project A', '🅰️', 1, 'channel-a', 'bbangbbang'),
       (2, 'Project B', '🅱️', 2, 'channel-b', 'pangpang');
-    INSERT INTO items (
+    INSERT OR IGNORE INTO items (
       id, project_id, status, title, content, sort_order, is_today,
       today_queue_order, owner
     ) VALUES
@@ -89,7 +98,7 @@ function createFixture({ failOnce = [], singleItemProject = false } = {}) {
   migrateTodayQueueHistorySchema(db);
 
   const counters = { run: 0, task: 0, nonce: 0, message: 0 };
-  const createId = type => `${type}-${++counters[type]}`;
+  const createId = type => `${idPrefix}${type}-${++counters[type]}`;
   const failures = new Map(failOnce.map(itemId => [itemId, 1]));
   const dispatches = [];
   const events = [];
@@ -382,4 +391,104 @@ test("marks the run completed when the accepted result exhausts todo items", asy
   assert.equal(currentRunId(fixture.db, 1), null);
   assert.equal(fixture.db.prepare("SELECT current_task_run_id FROM items WHERE id=101").get().current_task_run_id, null);
   fixture.db.close();
+});
+
+test("preserves isolated runs, failures, retries, and stop state across database restarts", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bb-todo-queue-history-"));
+  const databasePath = path.join(directory, "queue.db");
+
+  try {
+    const first = createFixture({
+      databasePath,
+      idPrefix: "before-restart-",
+      failOnce: [102],
+    });
+    const [a, b] = await Promise.all([
+      first.service.dispatchNext({ projectId: 1, startedBy: "qa:parallel" }),
+      first.service.dispatchNext({ projectId: 2, startedBy: "qa:parallel" }),
+    ]);
+    assert.equal(a.started, true);
+    assert.equal(b.started, true);
+
+    const aFirst = await first.handler(
+      first.message(1),
+      marker(101, a.dispatch.nonce, "abc1001"),
+    );
+    assert.equal(aFirst.accepted, true);
+    assert.equal(aFirst.next.reason, "dispatch_failed");
+    assert.equal(first.service.buildProjectStatus(2).active[0].id, 201);
+    assert.deepEqual(taskRuns(first.db, a.run_id, 102).map(row => [row.attempt, row.status]), [
+      [1, "failed"],
+    ]);
+    first.db.close();
+
+    const second = createFixture({ databasePath, idPrefix: "after-restart-" });
+    const retry = await second.service.dispatchNext({
+      projectId: 1,
+      expectedRunId: a.run_id,
+      startedBy: "qa:retry",
+    });
+    assert.equal(retry.started, true);
+    assert.equal(retry.run_id, a.run_id);
+    assert.equal(retry.item.id, 102);
+    assert.equal(retry.attempt, 2);
+    assert.deepEqual(taskRuns(second.db, a.run_id, 102).map(row => [row.attempt, row.status]), [
+      [1, "failed"],
+      [2, "active"],
+    ]);
+
+    second.service.stop({ projectId: 2 });
+    assert.equal(run(second.db, b.run_id).status, "stopped");
+    assert.equal(run(second.db, a.run_id).status, "running");
+    second.db.close();
+
+    const third = createFixture({ databasePath, idPrefix: "second-restart-" });
+    const history = createTodayQueueHistoryService({ db: third.db });
+    assert.equal(currentRunId(third.db, 1), a.run_id);
+    assert.equal(currentRunId(third.db, 2), null);
+    assert.equal(third.service.buildProjectStatus(1).active[0].id, 102);
+    assert.equal(third.service.buildProjectStatus(2).active.length, 0);
+
+    const beforeCompletion = history.getRun(a.run_id);
+    assert.deepEqual(
+      beforeCompletion.task_runs.map(row => [row.item_id, row.attempt, row.status]),
+      [
+        [101, 1, "review"],
+        [102, 1, "failed"],
+        [102, 2, "active"],
+      ],
+    );
+    assert.match(beforeCompletion.task_runs[1].error, /dispatch failed for 102/);
+
+    const completed = await third.handler(
+      third.message(1),
+      marker(102, retry.dispatch.nonce, "abc1002"),
+    );
+    assert.equal(completed.accepted, true);
+    assert.equal(completed.next.reason, "empty");
+    assert.equal(completed.next.completed_run_id, a.run_id);
+    third.db.close();
+
+    const fourth = createFixture({ databasePath, idPrefix: "final-restart-" });
+    const durableHistory = createTodayQueueHistoryService({ db: fourth.db });
+    assert.equal(run(fourth.db, a.run_id).status, "completed");
+    assert.equal(run(fourth.db, b.run_id).status, "stopped");
+    assert.deepEqual(
+      durableHistory.getRun(a.run_id).task_runs.map(row => [
+        row.item_id,
+        row.attempt,
+        row.status,
+        row.error,
+        row.git_commit,
+      ]),
+      [
+        [101, 1, "review", null, "abc1001"],
+        [102, 1, "failed", "dispatch failed for 102", null],
+        [102, 2, "review", null, "abc1002"],
+      ],
+    );
+    fourth.db.close();
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });

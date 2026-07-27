@@ -63,3 +63,41 @@ Screenshot evidence:
 - `/Users/bbangbbang/.openclaw/workspace/tmp/bb-app-1099/queue-live-dark.png`
 - `/Users/bbangbbang/.openclaw/workspace/tmp/bb-app-1099/queue-sse-refresh.png`
 - `/Users/bbangbbang/.openclaw/workspace/tmp/bb-app-1099/cleanup-production-restored.png`
+
+---
+
+## Phase 2 run-history QA
+
+Date: 2026-07-27
+Scope: DUDU #1150
+
+### Automated regression
+
+- `node --test server/*.test.js`: 65 passed, 0 failed.
+- `npm run lint`: 0 errors, 21 pre-existing warnings.
+- `npm run build`: passed, including TypeScript and the `/dashboard` plus authenticated run-history routes.
+- Added a disk-backed lifecycle integration test that closes and reopens SQLite three times while checking:
+  - two projects keep distinct run identities;
+  - an accepted result advances only its matching project/run;
+  - a failed attempt remains immutable when attempt 2 is appended;
+  - stopping one project preserves the other running project;
+  - completed/stopped run states, retry errors, result metadata, and git commits remain after restart.
+
+### Disposable live run-history smoke test
+
+The smoke test used an isolated `usage-server`, disposable SQLite database, two projects, and four AI Today items. Both projects targeted this QA thread with the inactive `boongboong` worker identity. Production Queue data was not modified.
+
+Verified:
+
+1. A1 and B1 dispatched concurrently with separate run IDs.
+2. Accepting A1 preserved A's run ID and left B1 active.
+3. A2 against an invalid Discord channel persisted attempt 1 as `failed` with Discord error `10003`.
+4. Retrying A2 restored the valid thread, appended attempt 2 as `active`, and preserved attempt 1 and its error.
+5. Stopping B produced a historical `stopped` run while A2 remained active.
+6. After two isolated-server restarts, A history remained `review → failed → active`, B remained `stopped`, and a project-filtered history query returned only A's run.
+7. The final active A run was stopped, the isolated server was terminated, and the disposable database directory was removed.
+
+Evidence:
+
+- `/Users/bbangbbang/.openclaw/workspace/artifacts/bb-todo/dashboard-1150/live-qa-evidence.json`
+- `/Users/bbangbbang/.openclaw/workspace/artifacts/bb-todo/dashboard-1150/isolated-server.log`
