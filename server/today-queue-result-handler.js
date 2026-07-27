@@ -18,6 +18,7 @@ function createTodayQueueResultHandler({
   getItemById,
   validateGitCommitDeclaration,
   markItemReview,
+  acceptResult = null,
   dispatchNext,
   broadcast,
 }) {
@@ -29,8 +30,8 @@ function createTodayQueueResultHandler({
     if (!markerStatusIsReadyForReview(marker.status)) return ignore("status_not_ready_for_review");
     if (!Number.isInteger(marker.item_id)) return ignore("item_id_missing");
     if (!marker.nonce) return ignore("nonce_missing");
-    const gitCommit = validateGitCommitDeclaration(marker.raw);
-    if (!gitCommit.valid) return ignore(gitCommit.reason);
+    const gitCommitValidation = validateGitCommitDeclaration(marker.raw);
+    if (!gitCommitValidation.valid) return ignore(gitCommitValidation.reason);
 
     const item = getItemById(marker.item_id);
     if (!item) return ignore("item_not_found", { item_id: marker.item_id });
@@ -59,7 +60,16 @@ function createTodayQueueResultHandler({
       });
     }
 
-    const updated = markItemReview(item.id, marker.nonce);
+    const updated = acceptResult
+      ? acceptResult({
+        item,
+        marker,
+        msg,
+        gitCommit: gitCommitValidation.declaration?.type === "commit"
+          ? gitCommitValidation.declaration.sha
+          : null,
+      })
+      : markItemReview(item.id, marker.nonce);
     if (updated.changes !== 1) return ignore("duplicate_or_stale", { item_id: item.id });
 
     broadcast("today-queue", {
@@ -75,7 +85,10 @@ function createTodayQueueResultHandler({
       itemId: item.id,
     });
 
-    const next = await dispatchNext(item.project_id);
+    const next = await dispatchNext(item.project_id, {
+      startedBy: "result-marker",
+      runId: updated.run_id || null,
+    });
     const nextItemId = next.dispatch?.item_id || next.item?.id || null;
     broadcast("today-queue", {
       action: "next-after-result",
@@ -94,7 +107,14 @@ function createTodayQueueResultHandler({
       });
     }
 
-    return { accepted: true, item_id: item.id, project_id: item.project_id, next };
+    return {
+      accepted: true,
+      item_id: item.id,
+      project_id: item.project_id,
+      run_id: updated.run_id || null,
+      task_run_id: updated.task_run_id || null,
+      next,
+    };
   };
 }
 

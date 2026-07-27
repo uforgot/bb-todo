@@ -22,6 +22,8 @@ function createTodayQueueService({
   defaultBotKey,
   dispatchItem,
   recordFailure,
+  runLifecycle = null,
+  createDispatchNonce = null,
 }) {
   const mutationLocks = new Set();
 
@@ -355,7 +357,13 @@ function createTodayQueueService({
     return db.prepare(todayQueueSelectSql("AND i.id=?")).get(itemId) || null;
   }
 
-  async function dispatchNext({ projectId = null, botKey = null, allowWhenRunning = false } = {}) {
+  async function dispatchNext({
+    projectId = null,
+    botKey = null,
+    allowWhenRunning = false,
+    startedBy = "api",
+    expectedRunId = null,
+  } = {}) {
     const key = projectLockKey(projectId);
     if (mutationIsLocked(projectId)) {
       return { project_id: projectId, started: false, reason: "action_in_progress", status: actionStatus(projectId) };
@@ -363,6 +371,20 @@ function createTodayQueueService({
 
     mutationLocks.add(key);
     try {
+      if (expectedRunId && runLifecycle && projectId !== null) {
+        const currentRun = runLifecycle.getCurrentRun(projectId);
+        if (!currentRun || currentRun.id !== expectedRunId) {
+          return {
+            project_id: projectId,
+            started: false,
+            reason: "run_mismatch",
+            expected_run_id: expectedRunId,
+            current_run_id: currentRun?.id || null,
+            status: actionStatus(projectId),
+          };
+        }
+      }
+
       const active = getItems(["in_progress"], projectId);
       if (active.length && !allowWhenRunning) {
         return {
@@ -376,39 +398,89 @@ function createTodayQueueService({
 
       const next = getItems(["todo"], projectId)[0] || null;
       if (!next) {
-        return { project_id: projectId, started: false, reason: "empty", status: actionStatus(projectId) };
-      }
-
-      if (!next.discord_thread_id && !next.discord_channel_id) {
-        recordFailure(next.id, `item #${next.id} project has no Discord channel/thread mapping`);
+        const completedRun = runLifecycle && projectId !== null
+          ? runLifecycle.completeRun(projectId)
+          : null;
         return {
-          project_id: next.project_id,
+          project_id: projectId,
           started: false,
-          reason: "missing_discord_target",
-          item: serializeQueueItem(next),
+          reason: "empty",
+          completed_run_id: completedRun?.id || null,
           status: actionStatus(projectId),
         };
       }
 
+      const dispatchBotKey = botKey || next.project_default_ai_bot_key || defaultBotKey;
+      let run = null;
+      let attempt = null;
       try {
-        const dispatchBotKey = botKey || next.project_default_ai_bot_key || defaultBotKey;
-        const dispatch = await dispatchItem(next, { botKey: dispatchBotKey });
+        if (runLifecycle) {
+          run = runLifecycle.ensureRun({
+            projectId: next.project_id,
+            items: getItems(["todo"], next.project_id),
+            startedBy,
+            botKey: dispatchBotKey,
+          });
+          attempt = runLifecycle.beginAttempt({
+            runId: run.id,
+            item: next,
+            botKey: dispatchBotKey,
+            nonce: createDispatchNonce?.(),
+          });
+        }
+
+        if (!next.discord_thread_id && !next.discord_channel_id) {
+          const error = new Error(`item #${next.id} project has no Discord channel/thread mapping`);
+          runLifecycle?.recordDispatchFailure({ taskRunId: attempt?.id, error });
+          recordFailure(next.id, error);
+          return {
+            project_id: next.project_id,
+            started: false,
+            reason: "missing_discord_target",
+            run_id: run?.id || null,
+            task_run_id: attempt?.id || null,
+            attempt: attempt?.attempt || null,
+            item: serializeQueueItem(getItemById(next.id)),
+            status: actionStatus(projectId),
+          };
+        }
+
+        const dispatch = await dispatchItem(next, {
+          botKey: dispatchBotKey,
+          nonce: attempt?.dispatch_nonce || null,
+          runId: run?.id || null,
+          taskRunId: attempt?.id || null,
+        });
+        if (runLifecycle) {
+          runLifecycle.recordDispatchSuccess({
+            itemId: next.id,
+            taskRunId: attempt.id,
+            dispatch,
+          });
+        }
         return {
           project_id: next.project_id,
           started: true,
           reason: "dispatched",
+          run_id: run?.id || null,
+          task_run_id: attempt?.id || null,
+          attempt: attempt?.attempt || null,
           dispatch,
           item: serializeQueueItem(getItemById(next.id)),
           status: actionStatus(projectId),
         };
       } catch (error) {
+        runLifecycle?.recordDispatchFailure({ taskRunId: attempt?.id, error });
         recordFailure(next.id, error);
         return {
           project_id: next.project_id,
           started: false,
           reason: "dispatch_failed",
+          run_id: run?.id || null,
+          task_run_id: attempt?.id || null,
+          attempt: attempt?.attempt || null,
           error: String(error?.message || error),
-          item: serializeQueueItem(next),
+          item: serializeQueueItem(getItemById(next.id)),
           status: actionStatus(projectId),
         };
       }
@@ -426,6 +498,29 @@ function createTodayQueueService({
     mutationLocks.add(key);
     try {
       const active = getItems(["in_progress"], projectId);
+      const serializedItems = active.map(serializeQueueItem);
+      if (runLifecycle) {
+        const projectIds = projectId === null
+          ? [...new Set([
+            ...active.map(item => item.project_id),
+            ...runLifecycle.getRunningProjectIds(),
+          ])]
+          : [projectId];
+        const stopped = projectIds.reduce((total, id) => (
+          total + runLifecycle.stopProject({
+            projectId: id,
+            activeItems: active.filter(item => item.project_id === id),
+          }).stopped
+        ), 0);
+        return {
+          project_id: projectId,
+          stopped,
+          reason: "stopped",
+          items: serializedItems,
+          status: actionStatus(projectId),
+        };
+      }
+
       const statement = db.prepare(`
         UPDATE items
            SET status='todo',
@@ -439,7 +534,7 @@ function createTodayQueueService({
         project_id: projectId,
         stopped: active.length,
         reason: "stopped",
-        items: active.map(serializeQueueItem),
+        items: serializedItems,
         status: actionStatus(projectId),
       };
     } finally {

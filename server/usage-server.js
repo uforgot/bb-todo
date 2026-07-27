@@ -26,6 +26,7 @@ const { createMeetingSummaryGenerator } = require("./meeting-summary");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
 const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
+const { createTodayQueueRunLifecycle } = require("./today-queue-run-lifecycle");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueResultHandler } = require("./today-queue-result-handler");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -2059,12 +2060,14 @@ function recordTodoDispatchFailure(itemId, error) {
   db.prepare("UPDATE items SET dispatch_last_error=? WHERE id=?").run(message, itemId);
 }
 
-async function dispatchTodoItemToDiscord(item, { botKey = DEFAULT_TODO_QUEUE_BOT_KEY } = {}) {
+async function dispatchTodoItemToDiscord(item, {
+  botKey = DEFAULT_TODO_QUEUE_BOT_KEY,
+  nonce = createTodoQueueNonce(),
+} = {}) {
   const channelId = item.discord_thread_id || item.discord_channel_id;
   if (!channelId) throw new Error(`item #${item.id} project has no Discord channel/thread mapping`);
   const botToken = TODAY_QUEUE_DISPATCH_TOKEN;
   const targetBot = resolveTodoQueueBot(botKey);
-  const nonce = createTodoQueueNonce();
   const files = collectTodoItemDispatchFiles(item);
   const content = buildTodoQueueDispatchPrompt(item, { nonce, targetBot });
   const message = await sendDiscordChannelMessage(channelId, {
@@ -2074,23 +2077,10 @@ async function dispatchTodoItemToDiscord(item, { botKey = DEFAULT_TODO_QUEUE_BOT
   }, botToken);
   const messageId = message?.id || null;
   const messageUrl = createDiscordMessageUrl(channelId, messageId);
-  db.prepare(`
-    UPDATE items
-       SET status='in_progress',
-           dispatch_nonce=?,
-           dispatch_message_id=?,
-           dispatch_channel_id=?,
-           dispatch_message_url=?,
-           dispatch_target_bot_key=?,
-           dispatch_target_bot_user_id=?,
-           dispatch_started_at=datetime('now'),
-           dispatch_attempt_count=COALESCE(dispatch_attempt_count,0)+1,
-           dispatch_last_error=NULL
-     WHERE id=?
-  `).run(nonce, messageId, channelId, messageUrl, targetBot.key, targetBot.discordUserId, item.id);
   return { item_id: item.id, channel_id: channelId, message_id: messageId, message_url: messageUrl, nonce, target_bot: targetBot.key, target_bot_user_id: targetBot.discordUserId };
 }
 
+const todayQueueRunLifecycle = createTodayQueueRunLifecycle({ db });
 const todayQueueService = createTodayQueueService({
   db,
   serializeTodoItem,
@@ -2098,6 +2088,8 @@ const todayQueueService = createTodayQueueService({
   defaultBotKey: DEFAULT_TODO_QUEUE_BOT_KEY,
   dispatchItem: dispatchTodoItemToDiscord,
   recordFailure: recordTodoDispatchFailure,
+  runLifecycle: todayQueueRunLifecycle,
+  createDispatchNonce: createTodoQueueNonce,
 });
 todayQueueService.initializeOrder();
 
@@ -2105,8 +2097,20 @@ function buildTodayQueueStatus(projectId = null, extra = {}) {
   return todayQueueService.buildStatus({ projectId, extra });
 }
 
-async function dispatchNextTodayQueueItem({ projectId = null, botKey = null, allowWhenRunning = false } = {}) {
-  return todayQueueService.dispatchNext({ projectId, botKey, allowWhenRunning });
+async function dispatchNextTodayQueueItem({
+  projectId = null,
+  botKey = null,
+  allowWhenRunning = false,
+  startedBy = "api",
+  expectedRunId = null,
+} = {}) {
+  return todayQueueService.dispatchNext({
+    projectId,
+    botKey,
+    allowWhenRunning,
+    startedBy,
+    expectedRunId,
+  });
 }
 
 function stopTodayQueue({ projectId = null } = {}) {
@@ -2129,18 +2133,18 @@ function validateTodayQueueProjectId(value) {
 const handleTodayQueueResultMarkerMessage = createTodayQueueResultHandler({
   getItemById: getTodayQueueItemById,
   validateGitCommitDeclaration,
-  markItemReview: (itemId, nonce) => db.prepare(`
-    UPDATE items
-       SET status='review',
-           review_count=COALESCE(review_count,0)+1,
-           review_emoji='👀',
-           updated_at=datetime('now'),
-           dispatch_last_error=NULL
-     WHERE id=?
-       AND status IN ('in_progress','todo')
-       AND dispatch_nonce=?
-  `).run(itemId, nonce),
-  dispatchNext: projectId => dispatchNextTodayQueueItem({ projectId }),
+  acceptResult: ({ item, marker, msg, gitCommit }) => todayQueueRunLifecycle.acceptResult({
+    itemId: item.id,
+    nonce: marker.nonce,
+    resultMessageId: msg.id || null,
+    resultMessageUrl: msg.url || createDiscordMessageUrl(msg.channelId || msg.channel?.id, msg.id),
+    gitCommit,
+  }),
+  dispatchNext: (projectId, options = {}) => dispatchNextTodayQueueItem({
+    projectId,
+    startedBy: options.startedBy || "result-marker",
+    expectedRunId: options.runId || null,
+  }),
   broadcast: broadcastSSE,
 });
 
@@ -3016,9 +3020,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const requestedBotKey = normalizeOptionalText(payload.bot_key || payload.target_bot_key);
-      const result = await dispatchNextTodayQueueItem({ projectId: projectValidation.projectId, botKey: requestedBotKey || null });
+      const action = url.pathname.endsWith("/start") ? "start" : "next";
+      const result = await dispatchNextTodayQueueItem({
+        projectId: projectValidation.projectId,
+        botKey: requestedBotKey || null,
+        startedBy: `api:${action}`,
+      });
       const event = {
-        action: url.pathname.endsWith("/start") ? "start" : "next",
+        action,
         projectId: result.project_id,
         started: result.started,
         reason: result.reason,
