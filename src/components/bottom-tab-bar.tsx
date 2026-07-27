@@ -12,7 +12,7 @@ export function BottomTabBar() {
   const { jobs } = useCron();
   const hasCronError = jobs.some((job) => (job.state?.consecutiveErrors ?? 0) > 0);
 
-  if (isEmbedded) return null;
+  if (isEmbedded || pathname.startsWith("/dashboard")) return null;
 
   return (
     <nav className="shrink-0 bg-background border-t" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
