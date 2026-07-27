@@ -11,7 +11,7 @@ require("dotenv").config({ path: path.join(__dirname, ".env") });
 require("dotenv").config({ path: path.join(os.homedir(), ".openclaw/.env") });
 
 const http = require("http");
-const { execSync } = require("child_process");
+const { execFile, execSync } = require("child_process");
 const https = require("https");
 const plist = require("simple-plist");
 const fs = require("fs");
@@ -591,6 +591,75 @@ let codexQuotaCache = {
   fetchedAt: 0,
   inflight: null,
 };
+
+let grokUsageCache = {
+  value: null,
+  fetchedAt: 0,
+  inflight: null,
+};
+
+function execFileJson(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, options, (error, stdout, stderr) => {
+      if (error) {
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (parseError) {
+        reject(new Error(`Invalid JSON from ${command}: ${parseError.message}`));
+      }
+    });
+  });
+}
+
+async function getGrokSubscriptionUsage(forceRefresh = false) {
+  const now = Date.now();
+  const cacheAge = now - grokUsageCache.fetchedAt;
+  if (!forceRefresh && grokUsageCache.value && cacheAge < 5 * 60 * 1000) {
+    return grokUsageCache.value;
+  }
+  if (grokUsageCache.inflight) return grokUsageCache.inflight;
+
+  grokUsageCache.inflight = (async () => {
+    try {
+      const codexbar = process.env.CODEXBAR_BIN || "/opt/homebrew/bin/codexbar";
+      const result = await execFileJson(
+        codexbar,
+        ["usage", "--provider", "grok", "--format", "json", "--source", "auto"],
+        { timeout: 30000, maxBuffer: 1024 * 1024 }
+      );
+      const entry = Array.isArray(result) ? result.find((item) => item?.provider === "grok") : null;
+      const usage = entry?.usage;
+      const primary = usage?.primary;
+      if (!primary || !Number.isFinite(primary.usedPercent)) {
+        throw new Error("Grok subscription quota is missing from CodexBar output");
+      }
+
+      const usedPercent = Math.max(0, Math.min(100, Number(primary.usedPercent)));
+      const value = {
+        provider: "grok",
+        plan: usage.loginMethod || usage.identity?.loginMethod || "SuperGrok",
+        used_percent: usedPercent,
+        left_percent: Math.max(0, 100 - usedPercent),
+        reset_at: primary.resetsAt || null,
+        source: entry.source || "grok-web",
+      };
+      grokUsageCache.value = value;
+      grokUsageCache.fetchedAt = Date.now();
+      return value;
+    } catch (error) {
+      console.error("Grok subscription usage error:", error.message);
+      return grokUsageCache.value || null;
+    } finally {
+      grokUsageCache.inflight = null;
+    }
+  })();
+
+  return grokUsageCache.inflight;
+}
 
 function formatResetRemaining(targetMs, now = Date.now()) {
   if (!targetMs) return null;
@@ -2792,16 +2861,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/usage" || url.pathname === "/usage/") {
-      const [claude, kimi, openai, codexQuota, openrouter, xai] = await Promise.all([
+      const [claude, kimi, openai, codexQuota, openrouter, xai, grok] = await Promise.all([
         getClaudeUsage(),
         getKimiBalance(),
         getOpenAIUsage(),
         getOpenClawCodexQuota(),
         getOpenRouterCredits(),
         getXaiCredits(),
+        getGrokSubscriptionUsage(),
       ]);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ claude, kimi, openai, codexQuota, openrouter, xai, timestamp: new Date().toISOString() }));
+      res.end(JSON.stringify({ claude, kimi, openai, codexQuota, openrouter, xai, grok, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/claude") {
       const claude = await getClaudeUsage();
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -2822,6 +2892,10 @@ const server = http.createServer(async (req, res) => {
       const xai = await getXaiCredits();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ xai, timestamp: new Date().toISOString() }));
+    } else if (url.pathname === "/usage/grok") {
+      const grok = await getGrokSubscriptionUsage(url.searchParams.get("refresh") === "1");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ grok, timestamp: new Date().toISOString() }));
     } else if (url.pathname === "/usage/codex") {
       const codexQuota = await getOpenClawCodexQuota();
       res.writeHead(200, { "Content-Type": "application/json" });
