@@ -26,6 +26,7 @@ const { createMeetingSummaryGenerator } = require("./meeting-summary");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
 const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
+const { createTodayQueueHistoryService } = require("./today-queue-history-service");
 const { createTodayQueueRunLifecycle } = require("./today-queue-run-lifecycle");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueResultHandler } = require("./today-queue-result-handler");
@@ -2080,6 +2081,7 @@ async function dispatchTodoItemToDiscord(item, {
   return { item_id: item.id, channel_id: channelId, message_id: messageId, message_url: messageUrl, nonce, target_bot: targetBot.key, target_bot_user_id: targetBot.discordUserId };
 }
 
+const todayQueueHistoryService = createTodayQueueHistoryService({ db });
 const todayQueueRunLifecycle = createTodayQueueRunLifecycle({ db });
 const todayQueueService = createTodayQueueService({
   db,
@@ -3002,6 +3004,46 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(result));
 
     // --- Today Task Queue API ---
+    } else if (url.pathname === "/api/today-queue/runs" && req.method === "GET") {
+      try {
+        const result = todayQueueHistoryService.listRuns({
+          cursor: url.searchParams.get("cursor"),
+          limit: url.searchParams.get("limit"),
+          projectId: url.searchParams.get("project_id"),
+          status: url.searchParams.get("status"),
+        });
+        sendJson(res, 200, result);
+      } catch (error) {
+        if (error?.statusCode === 400) {
+          sendError(res, 400, error.message);
+          return;
+        }
+        throw error;
+      }
+
+    } else if (url.pathname.match(/^\/api\/today-queue\/runs\/[^/]+$/) && req.method === "GET") {
+      let runId;
+      try {
+        runId = decodeURIComponent(url.pathname.split("/")[4]);
+      } catch {
+        sendError(res, 400, "run_id is invalid");
+        return;
+      }
+      try {
+        const result = todayQueueHistoryService.getRun(runId);
+        if (!result) {
+          sendError(res, 404, "queue run not found");
+          return;
+        }
+        sendJson(res, 200, result);
+      } catch (error) {
+        if (error?.statusCode === 400) {
+          sendError(res, 400, error.message);
+          return;
+        }
+        throw error;
+      }
+
     } else if (url.pathname === "/api/today-queue/status" && req.method === "GET") {
       const projectValidation = validateTodayQueueProjectId(url.searchParams.get("project_id"));
       if (projectValidation.error) {
