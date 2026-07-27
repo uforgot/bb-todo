@@ -204,6 +204,18 @@ SSE의 모든 Queue 이벤트에는 `projectId`를 포함한다.
 
 새 코드와 테스트는 처음부터 `project_id`를 반드시 전달한다.
 
+## Run history migration policy
+
+Queue 실행 이력은 `server/today-queue-history-schema.js`가 서버 시작 시 transaction으로 설치한다.
+
+- `today_queue_runs`는 프로젝트 단위 실행을 저장하며 프로젝트별 `running` row는 최대 1개다.
+- `today_queue_task_runs`는 dispatch attempt 단위다. retry는 같은 row를 덮어쓰지 않고 증가한 `attempt`로 새 row를 추가한다.
+- task-run row는 실행 당시 sequence, title, content, category, issue URL, bot, Discord metadata를 snapshot으로 보존한다.
+- `projects.current_run_id`와 `items.current_task_run_id`는 재시작 후 현재 실행을 복구하는 명시적 linkage다. timestamp로 현재 run을 추측하지 않는다.
+- `items.issue_url`은 명시적인 nullable URL이다. `content`에서 URL을 추출하지 않는다.
+- History 시작점은 이 migration이 배포된 시점이다. 기존 `items.dispatch_*` 값은 현재 상태로 유지하지만 run/task-run table로 backfill하거나 임의 grouping하지 않는다.
+- Schema migration은 idempotent하며 기존 Queue status/start/stop endpoint contract를 바꾸지 않는다.
+
 ## 완료 기준
 
 - A를 시작해도 B item은 선택되지 않는다.

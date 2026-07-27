@@ -25,6 +25,7 @@ const { scanDependencies } = require("./dependency-scanner");
 const { createMeetingSummaryGenerator } = require("./meeting-summary");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
+const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueResultHandler } = require("./today-queue-result-handler");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -243,6 +244,8 @@ try { db.exec("ALTER TABLE projects ADD COLUMN discord_channel_id TEXT"); } catc
 try { db.exec("ALTER TABLE projects ADD COLUMN discord_thread_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE projects ADD COLUMN default_ai_bot_key TEXT DEFAULT 'bbangbbang'"); } catch {}
 try { db.exec("UPDATE projects SET default_ai_bot_key='bbangbbang' WHERE default_ai_bot_key IS NULL OR trim(default_ai_bot_key)=''"); } catch {}
+// Migration: forward-only Today Queue run history. Existing dispatch metadata is not backfilled.
+migrateTodayQueueHistorySchema(db);
 // Discord channels table
 db.exec(`
   CREATE TABLE IF NOT EXISTS discord_channels (
