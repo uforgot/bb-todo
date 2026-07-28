@@ -29,6 +29,7 @@ const {
 } = require("./meeting-summary-jobs");
 const { createSillokSummaryDispatcher } = require("./sillok-summary-dispatcher");
 const { createSillokSummaryReconciler } = require("./sillok-summary-reconciler");
+const { MEETING_LIST_QUERY } = require("./meeting-list-query");
 const {
   normalizeLocation,
   resolveLocationLabel,
@@ -3259,7 +3260,7 @@ const server = http.createServer(async (req, res) => {
 
     } else if (url.pathname === "/api/meetings" && req.method === "GET") {
       const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
-      const rows = db.prepare("SELECT * FROM meetings ORDER BY record_number DESC LIMIT ?").all(limit);
+      const rows = db.prepare(MEETING_LIST_QUERY).all(limit);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ meetings: rows.map(row => serializeMeeting(req, row)) }));
 
