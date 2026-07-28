@@ -465,6 +465,37 @@ function createMeetingSummaryJobService({
     return serializeJob(row);
   }
 
+  function deadLetterJob(jobId, {
+    errorCode = "attempt_budget_exhausted",
+    error = "summary attempt budget exhausted",
+    expectedStatuses = ["queued", "retry_wait"],
+  } = {}) {
+    const timestamp = isoNow();
+    const row = db.transaction(() => {
+      const job = getJobRow(jobId);
+      if (!job) throw serviceError(404, "job_not_found", "summary job not found");
+      if (!expectedStatuses.includes(job.status)) {
+        throw serviceError(409, "invalid_job_state", "summary job cannot be dead-lettered from its current state");
+      }
+      const boundedCode = bounded(errorCode, 80) || "attempt_budget_exhausted";
+      const boundedError = bounded(error, 1000) || "summary attempt budget exhausted";
+      db.prepare(`
+        UPDATE meeting_summary_jobs
+           SET status='failed', next_attempt_at=NULL, last_error_code=?,
+               last_error=?, updated_at=?
+         WHERE id=?
+      `).run(boundedCode, boundedError, timestamp, jobId);
+      db.prepare(`
+        UPDATE meetings
+           SET summary_status='failed', summary_error=?,
+               summary_updated_at=?, updated_at=?
+         WHERE id=?
+      `).run(boundedError, timestamp, timestamp, job.record_id);
+      return getJobRow(jobId);
+    })();
+    return serializeJob(row);
+  }
+
   function retryJob(jobId) {
     const timestamp = isoNow();
     const row = db.transaction(() => {
@@ -537,6 +568,7 @@ function createMeetingSummaryJobService({
     completeJob,
     failAttempt,
     requeueDispatchFailure,
+    deadLetterJob,
     retryJob,
     recoverInterruptedJobs,
   };

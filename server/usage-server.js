@@ -28,6 +28,7 @@ const {
   createMeetingSummaryJobService,
 } = require("./meeting-summary-jobs");
 const { createSillokSummaryDispatcher } = require("./sillok-summary-dispatcher");
+const { createSillokSummaryReconciler } = require("./sillok-summary-reconciler");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
 const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
@@ -69,6 +70,10 @@ const SILLOK_SUMMARY_DISPATCH_CHANNEL_ID = process.env.SILLOK_SUMMARY_DISPATCH_C
 const SILLOK_SUMMARY_DISPATCH_POLL_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_POLL_MS || "15000", 10);
 const SILLOK_SUMMARY_DISPATCH_TIMEOUT_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_TIMEOUT_MS || "10000", 10);
 const SILLOK_SUMMARY_DISPATCH_RETRY_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_RETRY_MS || "30000", 10);
+const SILLOK_SUMMARY_RECONCILE_MS = parseInt(process.env.SILLOK_SUMMARY_RECONCILE_MS || "15000", 10);
+const SILLOK_SUMMARY_DISPATCH_STALE_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_STALE_MS || "20000", 10);
+const SILLOK_SUMMARY_ACK_TIMEOUT_MS = parseInt(process.env.SILLOK_SUMMARY_ACK_TIMEOUT_MS || "120000", 10);
+const SILLOK_SUMMARY_MAX_ATTEMPTS = parseInt(process.env.SILLOK_SUMMARY_MAX_ATTEMPTS || "5", 10);
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
 const DEFAULT_TODO_QUEUE_BOT_KEY = process.env.TODO_QUEUE_BOT_KEY || "bbangbbang";
 const DEFAULT_TODO_QUEUE_BOT_USER_ID = process.env.TODO_QUEUE_BOT_USER_ID || process.env.BBANGBBANG_USER_ID || "1471495923400970377";
@@ -2302,10 +2307,20 @@ const sillokSummaryDispatcher = createSillokSummaryDispatcher({
     SILLOK_SUMMARY_DISPATCH_TOKEN,
   ),
 });
+const sillokSummaryReconciler = createSillokSummaryReconciler({
+  summaryJobs: meetingSummaryJobService,
+  dispatcher: sillokSummaryDispatcher,
+  intervalMs: SILLOK_SUMMARY_RECONCILE_MS,
+  dispatchTimeoutMs: SILLOK_SUMMARY_DISPATCH_STALE_MS,
+  acknowledgementTimeoutMs: SILLOK_SUMMARY_ACK_TIMEOUT_MS,
+  maxAttempts: SILLOK_SUMMARY_MAX_ATTEMPTS,
+});
 if (SILLOK_SUMMARY_DISPATCH_ENABLED) {
   sillokSummaryDispatcher.start();
+  sillokSummaryReconciler.start();
 } else {
   console.log("[sillok-summary-dispatcher] disabled");
+  console.log("[sillok-summary-reconciler] disabled");
 }
 
 // Heartbeat — 좀비 커넥션 정리 (30초마다 ping)
@@ -3001,6 +3016,16 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify(serializeMeeting(req, row)));
       } catch (error) {
         sendError(res, Number(error?.statusCode) || 500, error.message || "failed to retry transcription");
+      }
+
+    } else if (url.pathname === "/api/meeting-summary-jobs/reconcile" && req.method === "POST") {
+      try {
+        sendJson(res, 200, await sillokSummaryReconciler.runOnce());
+      } catch (error) {
+        sendJson(res, Number(error?.statusCode) || 500, {
+          error: error.message || "failed to reconcile summary jobs",
+          error_code: error.code || "summary_reconcile_error",
+        });
       }
 
     } else if (url.pathname === "/api/meeting-summary-jobs" && req.method === "GET") {
