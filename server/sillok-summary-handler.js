@@ -357,6 +357,7 @@ function createSillokSummaryHandler({
         system: prompt.system,
         user: prompt.user,
         metadata: {
+          jobId: claim.job_id,
           recordId: claim.record_id,
           recordNumber: claim.record_number,
           conversationKind: context.kind,
