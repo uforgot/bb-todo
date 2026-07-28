@@ -206,7 +206,7 @@ for (const fixtureCase of cases) {
       transcript: fixtureCase.transcript,
       generator: async request => {
         captured = request;
-        return { title: fixtureCase.title, summary: fixtureCase.summary };
+        return { title: fixtureCase.title, summary: fixtureCase.summary, feedback: "신빵, 이 기록에서 한 가지 더 생각해볼 지점이 보여." };
       },
     });
     const result = await fixture.handler.handle(fixture.packet);
@@ -219,6 +219,7 @@ for (const fixtureCase of cases) {
     assert.equal(meeting.title, "사용자 제목");
     assert.equal(meeting.title_source, "user");
     assert.equal(meeting.summary, fixtureCase.summary);
+    assert.equal(result.feedback, "신빵, 이 기록에서 한 가지 더 생각해볼 지점이 보여.");
     assert.equal(meeting.summary_model, "openai/gpt-5.6-sol");
     const storedJob = fixture.service.getJob(fixture.job.id);
     assert.equal(storedJob.status, "completed");
@@ -259,33 +260,37 @@ test("adds only coarse recording context to the Agent prompt", () => {
   assert.match(prompt.user, /Weather: 29도, 흐림/);
   assert.doesNotMatch(prompt.user, /37\.5|126\.9|latitude|longitude/);
   assert.match(prompt.system, /의미가 있을 때만/);
-  assert.match(prompt.system, /신빵에게 직접 말하듯/);
-  assert.match(prompt.system, /빵빵의 자유로운 피드백/);
-  assert.match(prompt.system, /피드백의 위치·종류·문장 수·결론 형식은 강제하지 않는다/);
-  assert.match(prompt.system, /재미보다 빵빵의 유용한 의견이 우선/);
+  assert.match(prompt.system, /summary는 앱에 남는 독립적인 사실 요약/);
+  assert.match(prompt.system, /신빵에게 말을 거는 표현이나 빵빵의 의견·질문·조언을 섞지 말고/);
+  assert.match(prompt.system, /feedback은 bb-write에서 신빵에게 건네는 빵빵의 별도 대화/);
+  assert.match(prompt.system, /feedback의 종류·문장 수·결론 형식은 강제하지 않는다/);
   assert.match(prompt.system, /억지 농담/);
   assert.match(prompt.system, /speaker_names/);
 });
 
-test("accepts an eight-sentence summary with free Agent feedback", () => {
+test("keeps the factual summary separate from free Agent feedback", () => {
   const result = validateGeneratedSummary({
-    title: "내용과 자유로운 피드백",
-    summary: "첫 문장은 사실을 정리해. 둘째 문장도 기록을 이어가. 셋째 문장은 결정을 남겨. 넷째 문장은 미결점을 짚어. 나는 이 부분이 조금 이상하게 느껴져. 꼭 해결책부터 고를 필요는 없어 보여. 오히려 질문을 남기는 편이 낫겠어. 다음 기록에서 생각이 어떻게 바뀌는지 궁금해.",
+    title: "내용과 별도 피드백",
+    summary: "첫 문장은 사실을 정리한다. 둘째 문장은 기록의 흐름을 잇는다. 셋째 문장은 확인된 결정을 남긴다.",
+    feedback: "신빵, 나는 이 대목이 조금 이상하게 느껴져. 왜 이렇게 결정했는지 한 번 더 묻고 싶어.",
     speaker_names: {},
   });
-  assert.match(result.summary, /궁금해/);
+  assert.doesNotMatch(result.summary, /신빵|느껴|묻고 싶어/);
+  assert.match(result.feedback, /왜 이렇게 결정했는지/);
 });
 
 test("accepts only confident 신빵 speaker mappings", () => {
   assert.deepEqual(validateGeneratedSummary({
     title: "신빵의 기록",
-    summary: "신빵, 오늘 이야기는 꽤 바빴네. 그래도 중요한 순서는 잘 잡았어. 다음 기록에서 이어서 보자.",
+    summary: "오늘 기록에서는 여러 일정이 논의됐다. 중요한 순서를 먼저 정리했다. 다음 확인 시점을 남겼다.",
+    feedback: "신빵, 중요한 순서를 잘 잡은 것 같아.",
     speaker_names: { speaker_0: "신빵" },
   }).speakerNames, { speaker_0: "신빵" });
   assert.throws(
     () => validateGeneratedSummary({
       title: "잘못된 이름",
       summary: "첫 문장이다. 둘째 문장이다. 셋째 문장이다.",
+      feedback: "신빵, 이건 잘못된 화자 이름이야.",
       speaker_names: { speaker_0: "형주" },
     }),
     error => error.code === "invalid_speaker_names",
@@ -302,6 +307,7 @@ test("treats transcript prompt injection as quoted data and does not leak unrela
       return {
         title: "KIA 배포 일정 확정",
         summary: "KIA 배포 일정을 논의했다. 배포일은 금요일로 확정했다. 그 외 새로운 결정은 확인되지 않았다.",
+        feedback: "신빵, 금요일 확정이면 남은 검증 시간이 조금 빡빡해 보여.",
       };
     },
   });
@@ -326,6 +332,7 @@ test("retries a lost callback response and accepts the idempotent writeback repl
     generator: async () => ({
       title: "렉서스 QA 결과 검토",
       summary: "렉서스 QA 결과를 검토했다. 확인된 오류 두 건을 수정했다. 내일 수정 결과를 다시 확인하기로 했다.",
+      feedback: "신빵, 내일 다시 보는 순서가 현실적이야.",
     }),
   });
   const result = await fixture.handler.handle(fixture.packet);
@@ -341,7 +348,7 @@ test("retries a lost callback response and accepts the idempotent writeback repl
 test("reports generation failure without storing partial output", async () => {
   const fixture = createFixture({
     transcript: "가족이 주말 일정을 이야기했다.",
-    generator: async () => ({ title: "주말 일정", summary: "한 문장뿐이다." }),
+    generator: async () => ({ title: "주말 일정", summary: "한 문장뿐이다.", feedback: "신빵, 내용이 너무 짧아." }),
   });
   await assert.rejects(
     () => fixture.handler.handle(fixture.packet),

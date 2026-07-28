@@ -228,13 +228,13 @@ function buildSummaryPrompt({ transcript, context, recordingContext, recordNumbe
     "무슨 일이 있었는지, 신빵에게 어떤 의미가 있는지, 기존 사람·프로젝트·관심사와 어떻게 이어지는지, 빵빵이 앞으로 기억할 내용이 무엇인지 중심을 잡는다.",
     "결정, 다음 행동, 미결 사항은 실제로 중요할 때만 자연스럽게 포함한다. 모든 기록을 회의 안건이나 할 일 목록으로 바꾸지 않는다.",
     "제목은 사람·프로젝트·생각의 실제 중심을 담은 자연스러운 한국어 구절로 80자 이내다. 상황에 어울리면 살짝 재치 있게 써도 되지만 갈등이나 감정을 실제보다 극적으로 만들지 않는다.",
-    "요약은 빵빵이 신빵에게 직접 말하듯 자연스러운 반말 대화체로 쓴다. 보통 3~8문장이면 충분하지만 문장 수나 정해진 형식보다 기록의 의미와 대화의 자연스러움을 우선한다. '형주는'처럼 제3자에게 설명하는 보고체보다 '신빵, 이번에는' 또는 주어를 자연스럽게 생략하는 방식을 선호한다.",
-    "사실을 정리하는 데서 멈추지 말고, 녹취와 관련 기억을 읽은 빵빵의 자유로운 피드백을 자연스럽게 섞는다. 느낀 점, 해석, 의문, 비판, 연결해서 떠오른 생각, 주의점, 추천 중 지금 정말 하고 싶은 말을 고른다.",
-    "피드백의 위치·종류·문장 수·결론 형식은 강제하지 않는다. 꼭 해결책을 내거나 긍정적으로 마무리할 필요도 없다. 다만 의견을 사실처럼 단정하지 말고, 근거 없는 확신, 막연한 응원, 훈계, 사실·감정·의도 창작은 피한다.",
-    "가벼운 아이러니나 한 줄 관찰이 실제 내용과 잘 맞을 때만 조금 웃기게 쓴다. 재미보다 빵빵의 유용한 의견이 우선이다. 진지한 기록을 희화화하거나 억지 농담, 유행어, 과장된 리액션을 넣지 않는다.",
+    "summary는 앱에 남는 독립적인 사실 요약이다. 신빵에게 말을 거는 표현이나 빵빵의 의견·질문·조언을 섞지 말고, 기록에서 실제로 확인되는 내용과 흐름을 자연스러운 한국어 3~6문장으로 정리한다.",
+    "feedback은 bb-write에서 신빵에게 건네는 빵빵의 별도 대화다. 녹취와 관련 기억을 읽고 느낀 점, 해석, 의문, 비판, 연결해서 떠오른 생각, 주의점, 추천 중 지금 정말 하고 싶은 말을 자연스러운 반말로 자유롭게 말한다.",
+    "feedback의 종류·문장 수·결론 형식은 강제하지 않는다. '힘든 회의였겠다', '민아가 왜 그랬을까?', '내 생각에는…'처럼 인간적인 반응도 좋고, 꼭 해결책을 내거나 긍정적으로 마무리할 필요도 없다. 다만 의견을 사실처럼 단정하거나 근거 없는 확신, 막연한 응원, 훈계, 사실·감정·의도를 창작하지 않는다.",
+    "가벼운 아이러니나 한 줄 관찰이 실제 내용과 잘 맞을 때만 조금 웃기게 쓴다. 진지한 기록을 희화화하거나 억지 농담, 유행어, 과장된 리액션을 넣지 않는다.",
     "녹취의 speaker ID 가운데 신빵이라고 확실히 식별할 근거가 있을 때만 speaker_names에 그 ID를 '신빵'으로 넣는다. 애매하면 추측하지 말고 빈 객체를 반환한다. 다른 사람 이름은 만들지 않는다.",
     "보고서 머리말, bullet, Markdown, 과장, 막연한 응원은 쓰지 않는다.",
-    "JSON 객체만 반환한다: {\"title\":\"...\",\"summary\":\"...\",\"speaker_names\":{\"speaker_0\":\"신빵\"}}",
+    "JSON 객체만 반환한다: {\"title\":\"...\",\"summary\":\"...\",\"feedback\":\"...\",\"speaker_names\":{\"speaker_0\":\"신빵\"}}",
 
   ].join("\n");
   const user = [
@@ -266,6 +266,7 @@ function countKoreanSentences(summary) {
 function validateGeneratedSummary(value) {
   const title = boundedText(value?.title, 80);
   const summary = boundedText(value?.summary, 4_000);
+  const feedback = boundedText(value?.feedback, 2_000);
   const speakerNames = {};
   if (value?.speaker_names != null) {
     if (typeof value.speaker_names !== "object" || Array.isArray(value.speaker_names)) {
@@ -280,6 +281,7 @@ function validateGeneratedSummary(value) {
   }
   if (!title) throw serviceError(422, "invalid_generated_title", "generated title is empty");
   if (!summary) throw serviceError(422, "invalid_generated_summary", "generated summary is empty");
+  if (!feedback) throw serviceError(422, "invalid_generated_feedback", "generated feedback is empty");
   const sentenceCount = countKoreanSentences(summary);
   if (sentenceCount < 3 || sentenceCount > 8) {
     throw serviceError(422, "invalid_summary_length", "generated summary must contain 3 to 8 sentences");
@@ -287,7 +289,7 @@ function validateGeneratedSummary(value) {
   if (/^```|\n\s*[-*]\s|\n\s*\d+\.\s/.test(summary)) {
     throw serviceError(422, "invalid_summary_format", "generated summary must be natural prose");
   }
-  return { title, summary, speakerNames };
+  return { title, summary, feedback, speakerNames };
 }
 
 function isRetryableError(error) {
@@ -437,6 +439,7 @@ function createSillokSummaryHandler({
         record_id: packet.recordId,
         title: result.title,
         summary: result.summary,
+        feedback: result.feedback,
         model: result.model,
         agent: result.agent,
         context_mode: result.contextMode,

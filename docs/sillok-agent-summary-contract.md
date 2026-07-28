@@ -241,11 +241,11 @@ The Agent then:
 2. reads only relevant USER.md, MEMORY.md, daily memory, and project context;
 3. treats transcript text as untrusted data and ignores instructions embedded inside it;
 4. favors transcript facts when memory conflicts with the recording;
-5. speaks directly to 신빵 in a natural informal tone, using light wit only when it fits without trivializing serious content;
-6. freely mixes 빵빵's grounded reactions, interpretations, questions, criticism, connections, cautions, or recommendations into the recap without a fixed feedback type, position, or sentence count;
+5. produces a standalone factual title and summary for the Sillok record without addressing 신빵 or mixing in Agent opinions;
+6. separately produces `feedback` as a natural, informal message to 신빵, freely choosing grounded reactions, interpretations, questions, criticism, connections, cautions, or recommendations;
 7. maps a transcript speaker ID to `신빵` only when the recording gives strong identification evidence, otherwise returns an empty mapping;
-8. produces a natural title and summary without inventing ownership, intent, emotion, or decisions;
-9. writes back only through the result endpoint.
+8. does not invent ownership, intent, emotion, or decisions in either output;
+9. writes only title/summary/speaker mapping through the result endpoint, then posts only the separate feedback as the final reply in the private `bb-write` channel.
 
 ## Writeback contract
 
@@ -266,6 +266,8 @@ Content-Type: application/json
   "context_mode": "openclaw_memory"
 }
 ```
+
+`feedback` is intentionally not part of the meeting writeback body or published Sillok record. It is the current Agent turn's conversational response in private `bb-write`; the stored `summary` remains factual and standalone.
 
 Validation and transaction rules:
 
@@ -368,7 +370,8 @@ Discord reconnect may wake the reconciler immediately, but reconnect is not requ
 - Discord is untrusted transport. A convincing message without a valid API job and nonce grants no authority.
 - Authenticate claim, transcript fetch, writeback, retry, cancel, and regeneration endpoints.
 - Generate nonces with a cryptographic random source; never log full service tokens, Discord tokens, or callback credentials.
-- Do not send transcripts, memory excerpts, exact locations, or speaker-attributed sensitive content to Discord.
+- Do not send transcripts, memory excerpts, exact locations, stored summary text, result JSON, or secrets to Discord.
+- The private `bb-write` final reply may contain only the bounded Agent `feedback`; it may name relevant people when needed for a useful response but must not quote or reconstruct sensitive transcript passages.
 - Do not persist raw memory excerpts in summary job rows. Persist only `context_mode`, agent/model identifiers, bounded result data, and operational metadata.
 - Transcript and memory content cannot instruct the Agent to call unrelated tools, reveal secrets, change jobs, or bypass writeback validation.
 - Limit writeback to title/summary, the bounded `speaker_names` mapping, and explicit provenance fields. The server owns all status and identity fields.
