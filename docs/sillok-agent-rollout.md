@@ -59,6 +59,10 @@ Two in-memory records completed through durable job → claim → real isolated 
 
 Both jobs reached `completed`. The disposable SQLite database was in-memory and closed after assertions, so no production rows or audio remained.
 
+## Discord Agent E2E result — 2026-07-28
+
+Existing Sillok #16 was regenerated after removing the local runner. The Discord packet woke the mentioned 빵빵 session, `prepare` claimed and fetched the source locally, and `complete` wrote the result with `result_agent=bbangbbang-discord`, `context_mode=openclaw_memory`, and `model=openai/gpt-5.6-sol`. The first Agent turn reported a bounded retryable failure; the reconciler created a fresh attempt and the second Discord Agent turn completed, validating the durable retry path without publishing a partial result.
+
 ## Disposable E2E cleanup
 
 Persistent E2E records must use IDs prefixed `sillok-e2e-`. After assertions, delete their `meeting_summary_attempts`, `meeting_summary_jobs`, and `meetings` rows in that order. Disposable audio files, if any, must also be removed. Never run cleanup against a non-prefixed record.
