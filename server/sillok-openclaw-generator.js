@@ -30,7 +30,7 @@ function safeSessionPart(value) {
 }
 
 function createOpenClawSummaryGenerator({
-  command = "openclaw",
+  command = process.env.OPENCLAW_BIN || "openclaw",
   agentId = "main",
   timeoutSeconds = 180,
   thinking = "medium",
