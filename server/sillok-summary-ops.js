@@ -78,7 +78,7 @@ async function prepareAgentTurn(jobId, attemptId, nonce) {
     prompt: { system: prompt.system, user: prompt.user },
     required_result: {
       title: "80자 이내 한국어 제목",
-      summary: "사실 요약 뒤에 빵빵의 구체적인 판단·추천 1~2문장을 담아 신빵에게 직접 말하는 한국어 반말 4~6문장",
+      summary: "사실 정리와 빵빵의 자유로운 피드백을 자연스럽게 섞어 신빵에게 직접 말하는 한국어 반말; 보통 3~8문장",
       speaker_names: "확실히 식별한 transcript speaker ID만 신빵으로 매핑; 아니면 빈 객체",
       model: "현재 OpenClaw 세션의 provider/model",
     },
