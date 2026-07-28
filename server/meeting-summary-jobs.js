@@ -187,8 +187,8 @@ function createMeetingSummaryJobService({
       const timestamp = isoNow();
       rows = db.prepare(`
         SELECT * FROM meeting_summary_jobs
-         WHERE status='queued'
-            OR (status='retry_wait' AND (next_attempt_at IS NULL OR next_attempt_at<=?))
+         WHERE status IN ('queued', 'retry_wait')
+           AND (next_attempt_at IS NULL OR next_attempt_at<=?)
          ORDER BY created_at ASC, generation ASC
          LIMIT ?
       `).all(timestamp, safeLimit);
@@ -218,7 +218,7 @@ function createMeetingSummaryJobService({
         }
         throw serviceError(409, "job_not_dispatchable", "summary job is not dispatchable");
       }
-      if (job.status === "retry_wait" && job.next_attempt_at && job.next_attempt_at > timestamp) {
+      if (job.next_attempt_at && job.next_attempt_at > timestamp) {
         throw serviceError(409, "retry_not_due", "summary job retry is not due");
       }
       const attempt = Number(job.attempt_count || 0) + 1;
@@ -237,8 +237,10 @@ function createMeetingSummaryJobService({
       `).run(attempt, attemptId, timestamp, jobId);
       return { job: getJobRow(jobId), attempt: getAttemptRow(attemptId), replay: false };
     })();
+    const meeting = db.prepare("SELECT record_number FROM meetings WHERE id=?").get(result.job.record_id);
     return {
       job: serializeJob(result.job, { includeNonce: true }),
+      record_number: meeting?.record_number ?? null,
       replay: result.replay,
     };
   }
@@ -422,6 +424,47 @@ function createMeetingSummaryJobService({
     return serializeJob(row);
   }
 
+  function requeueDispatchFailure(jobId, {
+    attemptId,
+    nonce,
+    errorCode = "discord_send_failed",
+    error = "Discord summary dispatch failed",
+    nextAttemptAt = null,
+  } = {}) {
+    const timestamp = isoNow();
+    const row = db.transaction(() => {
+      const job = getJobRow(jobId);
+      const attempt = attemptId ? getAttemptRow(attemptId) : null;
+      if (!job || !attempt || attempt.job_id !== jobId || job.current_attempt_id !== attemptId || attempt.nonce !== nonce) {
+        throw serviceError(409, "stale_attempt", "summary attempt is stale");
+      }
+      if (job.status !== "dispatching" || attempt.status !== "dispatching") {
+        throw serviceError(409, "invalid_attempt_state", "summary attempt is not dispatching");
+      }
+      const boundedCode = bounded(errorCode, 80) || "discord_send_failed";
+      const boundedError = bounded(error, 1000) || "Discord summary dispatch failed";
+      db.prepare(`
+        UPDATE meeting_summary_attempts
+           SET status='failed', finished_at=?, error_code=?, error=?
+         WHERE id=?
+      `).run(timestamp, boundedCode, boundedError, attemptId);
+      db.prepare(`
+        UPDATE meeting_summary_jobs
+           SET status='queued', current_attempt_id=NULL, next_attempt_at=?,
+               last_error_code=?, last_error=?, updated_at=?
+         WHERE id=?
+      `).run(nextAttemptAt, boundedCode, boundedError, timestamp, jobId);
+      db.prepare(`
+        UPDATE meetings
+           SET summary_status='queued', summary_error=NULL,
+               summary_updated_at=?, updated_at=?
+         WHERE id=?
+      `).run(timestamp, timestamp, job.record_id);
+      return getJobRow(jobId);
+    })();
+    return serializeJob(row);
+  }
+
   function retryJob(jobId) {
     const timestamp = isoNow();
     const row = db.transaction(() => {
@@ -473,6 +516,9 @@ function createMeetingSummaryJobService({
          WHERE id=?
       `);
       for (const job of interrupted) {
+        // A dispatching attempt may have reached Discord before the process stopped.
+        // Keep the same attempt so the dispatcher can replay Discord's stable nonce.
+        if (job.status === "dispatching") continue;
         if (job.current_attempt_id) failAttemptStatement.run(timestamp, job.current_attempt_id);
         recoverJob.run(timestamp, timestamp, job.id);
         recoverMeeting.run(timestamp, timestamp, job.record_id);
@@ -490,6 +536,7 @@ function createMeetingSummaryJobService({
     claimJob,
     completeJob,
     failAttempt,
+    requeueDispatchFailure,
     retryJob,
     recoverInterruptedJobs,
   };

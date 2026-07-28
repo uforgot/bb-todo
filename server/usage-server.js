@@ -27,6 +27,7 @@ const {
   migrateMeetingSummaryJobsSchema,
   createMeetingSummaryJobService,
 } = require("./meeting-summary-jobs");
+const { createSillokSummaryDispatcher } = require("./sillok-summary-dispatcher");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
 const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
@@ -62,6 +63,12 @@ const REVIEW_ATTACHMENTS_MAX_BYTES = parseInt(process.env.REVIEW_ATTACHMENTS_MAX
 const MEETING_ARCHIVE_DIR = process.env.MEETING_ARCHIVE_DIR || path.join(os.homedir(), "Documents", "MeetingArchive");
 const MEETING_UPLOAD_MAX_BYTES = parseInt(process.env.MEETING_UPLOAD_MAX_BYTES || String(512 * 1024 * 1024), 10);
 const MEETING_AGENT_SUMMARY_ENABLED = /^true$/i.test(process.env.MEETING_AGENT_SUMMARY_ENABLED || "");
+const SILLOK_SUMMARY_DISPATCH_ENABLED = MEETING_AGENT_SUMMARY_ENABLED
+  && !/^false$/i.test(process.env.SILLOK_SUMMARY_DISPATCH_ENABLED || "");
+const SILLOK_SUMMARY_DISPATCH_CHANNEL_ID = process.env.SILLOK_SUMMARY_DISPATCH_CHANNEL_ID || "1475129999991509094";
+const SILLOK_SUMMARY_DISPATCH_POLL_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_POLL_MS || "15000", 10);
+const SILLOK_SUMMARY_DISPATCH_TIMEOUT_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_TIMEOUT_MS || "10000", 10);
+const SILLOK_SUMMARY_DISPATCH_RETRY_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_RETRY_MS || "30000", 10);
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
 const DEFAULT_TODO_QUEUE_BOT_KEY = process.env.TODO_QUEUE_BOT_KEY || "bbangbbang";
 const DEFAULT_TODO_QUEUE_BOT_USER_ID = process.env.TODO_QUEUE_BOT_USER_ID || process.env.BBANGBBANG_USER_ID || "1471495923400970377";
@@ -70,6 +77,7 @@ const TODAY_QUEUE_BRIDGE_TOKEN = process.env.DISCORD_TODAY_QUEUE_BRIDGE_TOKEN ||
 // Send queue task packets as the queue/listener bot, not as the selected worker AI.
 // The selected project AI stays the mention/marker author target.
 const TODAY_QUEUE_DISPATCH_TOKEN = process.env.DISCORD_TODAY_QUEUE_DISPATCH_TOKEN || TODAY_QUEUE_BRIDGE_TOKEN || process.env.DISCORD_PANG_TOKEN || "";
+const SILLOK_SUMMARY_DISPATCH_TOKEN = process.env.DISCORD_SILLOK_SUMMARY_TOKEN || TODAY_QUEUE_DISPATCH_TOKEN;
 
 if (!API_KEY) {
   console.error("❌ USAGE_API_KEY is required");
@@ -2060,16 +2068,25 @@ function buildTodoQueueDispatchPrompt(item, { nonce, targetBot }) {
   });
 }
 
-function sendDiscordChannelMessage(channelId, { content, files = [], allowedUserIds = [] }, botToken) {
+function sendDiscordChannelMessage(channelId, {
+  content,
+  files = [],
+  allowedUserIds = [],
+  nonce = null,
+  enforceNonce = false,
+  timeoutMs = 10_000,
+}, botToken) {
   return new Promise((resolve, reject) => {
     if (!botToken) { reject(new Error("Discord bot token not configured")); return; }
     if (!channelId) { reject(new Error("Discord channel id required")); return; }
     const payloadJson = {
       content,
       allowed_mentions: {
+        parse: [],
         users: allowedUserIds.filter(Boolean),
         replied_user: false,
       },
+      ...(nonce ? { nonce: String(nonce).slice(0, 25), enforce_nonce: Boolean(enforceNonce) } : {}),
     };
 
     const finish = (dRes) => {
@@ -2079,7 +2096,10 @@ function sendDiscordChannelMessage(channelId, { content, files = [], allowedUser
         let parsed = null;
         try { parsed = responseText ? JSON.parse(responseText) : null; } catch {}
         if (dRes.statusCode < 200 || dRes.statusCode >= 300) {
-          reject(new Error(`Discord POST ${dRes.statusCode}: ${responseText.slice(0, 300)}`));
+          reject(Object.assign(
+            new Error(`Discord POST ${dRes.statusCode}: ${responseText.slice(0, 300)}`),
+            { statusCode: dRes.statusCode, code: `discord_http_${dRes.statusCode}` },
+          ));
           return;
         }
         resolve(parsed || { raw: responseText });
@@ -2098,6 +2118,9 @@ function sendDiscordChannelMessage(channelId, { content, files = [], allowedUser
           "Content-Length": Buffer.byteLength(payload),
         },
       }, finish);
+      dReq.setTimeout(timeoutMs, () => {
+        dReq.destroy(Object.assign(new Error("Discord POST timed out"), { code: "discord_timeout" }));
+      });
       dReq.on("error", reject);
       dReq.write(payload);
       dReq.end();
@@ -2125,6 +2148,9 @@ function sendDiscordChannelMessage(channelId, { content, files = [], allowedUser
         "Content-Length": body.length,
       },
     }, finish);
+    dReq.setTimeout(timeoutMs, () => {
+      dReq.destroy(Object.assign(new Error("Discord POST timed out"), { code: "discord_timeout" }));
+    });
     dReq.on("error", reject);
     dReq.write(body);
     dReq.end();
@@ -2261,6 +2287,25 @@ const meetingSummaryJobService = createMeetingSummaryJobService({
 const recoveredMeetingSummaryJobs = meetingSummaryJobService.recoverInterruptedJobs();
 if (recoveredMeetingSummaryJobs > 0) {
   console.log(`[meeting-summary-jobs] recovered ${recoveredMeetingSummaryJobs} interrupted job(s)`);
+}
+
+const sillokSummaryDispatcher = createSillokSummaryDispatcher({
+  summaryJobs: meetingSummaryJobService,
+  channelId: SILLOK_SUMMARY_DISPATCH_CHANNEL_ID,
+  targetUserId: DEFAULT_TODO_QUEUE_BOT_USER_ID,
+  pollIntervalMs: SILLOK_SUMMARY_DISPATCH_POLL_MS,
+  sendTimeoutMs: SILLOK_SUMMARY_DISPATCH_TIMEOUT_MS,
+  retryDelayMs: SILLOK_SUMMARY_DISPATCH_RETRY_MS,
+  sendMessage: ({ channelId, ...payload }) => sendDiscordChannelMessage(
+    channelId,
+    payload,
+    SILLOK_SUMMARY_DISPATCH_TOKEN,
+  ),
+});
+if (SILLOK_SUMMARY_DISPATCH_ENABLED) {
+  sillokSummaryDispatcher.start();
+} else {
+  console.log("[sillok-summary-dispatcher] disabled");
 }
 
 // Heartbeat — 좀비 커넥션 정리 (30초마다 ping)
