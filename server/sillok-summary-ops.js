@@ -142,6 +142,16 @@ async function main() {
     result = await request(`/api/meeting-summary-jobs/${encodeURIComponent(args[0])}/retry`, { method: "POST" });
   } else if (command === "reconcile") {
     result = await request("/api/meeting-summary-jobs/reconcile", { method: "POST" });
+  } else if (command === "regenerate") {
+    if (!args[0]) throw new Error("usage: sillok-summary-ops.js regenerate <record-number-or-id> [trigger]");
+    const listing = await request("/api/meetings");
+    const meetings = Array.isArray(listing) ? listing : listing?.meetings || [];
+    const meeting = meetings.find(item => item.id === args[0] || String(item.record_number) === String(args[0]));
+    if (!meeting) throw new Error(`Sillok record not found: ${args[0]}`);
+    result = await request(`/api/meetings/${encodeURIComponent(meeting.id)}/summary/agent`, {
+      method: "POST",
+      body: { trigger: args[1] || "manual_discord_agent", regenerate: true },
+    });
   } else if (command === "prepare") {
     result = await prepareAgentTurn(args[0], args[1], args[2]);
   } else if (command === "complete") {
@@ -149,7 +159,7 @@ async function main() {
   } else if (command === "fail") {
     result = await failAgentTurn(args[0], args[1], args[2], args[3]);
   } else {
-    throw new Error("usage: sillok-summary-ops.js [list|pending|retry|reconcile|prepare|complete|fail]");
+    throw new Error("usage: sillok-summary-ops.js [list|pending|retry|reconcile|regenerate|prepare|complete|fail]");
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
