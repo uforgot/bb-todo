@@ -184,6 +184,23 @@ function collectMemoryContext({
   };
 }
 
+function buildAgentTranscript(meeting) {
+  const segments = meeting?.transcription?.segments;
+  if (Array.isArray(segments) && segments.length > 0) {
+    const lines = segments
+      .map(segment => {
+        const speakerId = typeof segment?.speaker_id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(segment.speaker_id)
+          ? segment.speaker_id
+          : "unknown_speaker";
+        const text = boundedText(segment?.text, 20_000);
+        return text ? `${speakerId}: ${text}` : "";
+      })
+      .filter(Boolean);
+    if (lines.length > 0) return lines.join("\n");
+  }
+  return boundedText(meeting?.transcript, DEFAULT_TRANSCRIPT_MAX_CHARS * 2);
+}
+
 function truncatePreservingEnds(value, maxChars) {
   const text = String(value || "").trim();
   if (text.length <= maxChars) return { text, truncated: false };
@@ -370,7 +387,7 @@ function createSillokSummaryHandler({
         throw serviceError(409, "claim_locator_mismatch", "claimed Sillok record does not match the gateway packet");
       }
       const meeting = await apiClient.fetchMeeting(claim.record_id);
-      const transcript = boundedText(meeting?.transcript, transcriptMaxChars * 2);
+      const transcript = boundedText(buildAgentTranscript(meeting), transcriptMaxChars * 2);
       if (!transcript) throw serviceError(422, "transcript_missing", "claimed Sillok record has no transcript");
       const context = collectMemoryContext({ transcript, workspaceRoot, maxChars: contextMaxChars });
       const prompt = buildSummaryPrompt({
@@ -447,6 +464,7 @@ module.exports = {
   parseSillokGatewayPacket,
   classifyConversation,
   collectMemoryContext,
+  buildAgentTranscript,
   buildSummaryPrompt,
   validateGeneratedSummary,
   createSillokApiClient,

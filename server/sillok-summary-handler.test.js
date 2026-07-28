@@ -11,6 +11,7 @@ const {
 const {
   parseSillokGatewayPacket,
   collectMemoryContext,
+  buildAgentTranscript,
   buildSummaryPrompt,
   validateGeneratedSummary,
   createSillokSummaryHandler,
@@ -226,6 +227,19 @@ for (const fixtureCase of cases) {
     fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
   });
 }
+
+test("preserves diarization speaker IDs for Agent identification", () => {
+  assert.equal(buildAgentTranscript({
+    transcript: "라벨 없는 원문",
+    transcription: {
+      segments: [
+        { speaker_id: "speaker_0", text: "인터랙션 질문이 있어요." },
+        { speaker_id: "speaker_1", text: "답변드릴게요." },
+      ],
+    },
+  }), "speaker_0: 인터랙션 질문이 있어요.\nspeaker_1: 답변드릴게요.");
+  assert.equal(buildAgentTranscript({ transcript: "라벨 없는 원문" }), "라벨 없는 원문");
+});
 
 test("adds only coarse recording context to the Agent prompt", () => {
   const prompt = buildSummaryPrompt({

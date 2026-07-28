@@ -5,6 +5,7 @@ const os = require("node:os");
 const plist = require("simple-plist");
 const {
   collectMemoryContext,
+  buildAgentTranscript,
   buildSummaryPrompt,
   validateGeneratedSummary,
 } = require("./sillok-summary-handler");
@@ -57,7 +58,7 @@ async function prepareAgentTurn(jobId, attemptId, nonce) {
     },
   });
   const meeting = await request(claim.transcript_url);
-  const transcript = meeting?.transcript || meeting?.transcription?.text || "";
+  const transcript = buildAgentTranscript(meeting);
   if (!transcript.trim()) throw new Error("meeting transcript is empty");
   const context = collectMemoryContext({ transcript });
   const prompt = buildSummaryPrompt({
