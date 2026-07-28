@@ -2630,7 +2630,7 @@ function getMeetingTranscriptionModel() {
     return process.env.MEETING_TRANSCRIPTION_MODEL;
   }
   try {
-    const config = JSON.parse(fs.readFileSync(VOICE_CONFIG_PATH, "utf8"));
+    const config = JSON.parse(stripJsonComments(fs.readFileSync(VOICE_CONFIG_PATH, "utf8")));
     if (/^scribe_v[12]$/.test(config.sttModel || "")) return config.sttModel;
   } catch {}
   return "scribe_v1";
