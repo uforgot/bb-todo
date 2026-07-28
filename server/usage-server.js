@@ -29,9 +29,6 @@ const {
 } = require("./meeting-summary-jobs");
 const { createSillokSummaryDispatcher } = require("./sillok-summary-dispatcher");
 const { createSillokSummaryReconciler } = require("./sillok-summary-reconciler");
-const { createSillokSummaryHandler } = require("./sillok-summary-handler");
-const { createOpenClawSummaryGenerator } = require("./sillok-openclaw-generator");
-const { createSillokAgentRunner } = require("./sillok-agent-runner");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
 const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
@@ -77,8 +74,6 @@ const SILLOK_SUMMARY_RECONCILE_MS = parseInt(process.env.SILLOK_SUMMARY_RECONCIL
 const SILLOK_SUMMARY_DISPATCH_STALE_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_STALE_MS || "20000", 10);
 const SILLOK_SUMMARY_ACK_TIMEOUT_MS = parseInt(process.env.SILLOK_SUMMARY_ACK_TIMEOUT_MS || "120000", 10);
 const SILLOK_SUMMARY_MAX_ATTEMPTS = parseInt(process.env.SILLOK_SUMMARY_MAX_ATTEMPTS || "5", 10);
-const SILLOK_AGENT_RUNNER_POLL_MS = parseInt(process.env.SILLOK_AGENT_RUNNER_POLL_MS || "5000", 10);
-const SILLOK_AGENT_TIMEOUT_SECONDS = parseInt(process.env.SILLOK_AGENT_TIMEOUT_SECONDS || "180", 10);
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
 const DEFAULT_TODO_QUEUE_BOT_KEY = process.env.TODO_QUEUE_BOT_KEY || "bbangbbang";
 const DEFAULT_TODO_QUEUE_BOT_USER_ID = process.env.TODO_QUEUE_BOT_USER_ID || process.env.BBANGBBANG_USER_ID || "1471495923400970377";
@@ -2312,41 +2307,6 @@ const sillokSummaryDispatcher = createSillokSummaryDispatcher({
     SILLOK_SUMMARY_DISPATCH_TOKEN,
   ),
 });
-const sillokSummaryHandler = createSillokSummaryHandler({
-  apiClient: {
-    claim: (packet, agent) => meetingSummaryJobService.claimJob(packet.jobId, {
-      attemptId: packet.attemptId,
-      nonce: packet.nonce,
-      agent,
-      schemaVersion: 1,
-    }),
-    fetchMeeting: recordId => db.prepare("SELECT * FROM meetings WHERE id=?").get(recordId),
-    writeResult: (packet, result) => meetingSummaryJobService.completeJob(packet.jobId, {
-      attemptId: packet.attemptId,
-      nonce: packet.nonce,
-      schemaVersion: 1,
-      title: result.title,
-      summary: result.summary,
-      model: result.model,
-      agent: result.agent,
-      contextMode: result.contextMode,
-    }),
-    fail: (packet, failure) => meetingSummaryJobService.failAttempt(packet.jobId, {
-      attemptId: packet.attemptId,
-      nonce: packet.nonce,
-      errorCode: failure.code,
-      error: failure.message,
-      retryable: failure.retryable,
-    }),
-  },
-  generateSummary: createOpenClawSummaryGenerator({ timeoutSeconds: SILLOK_AGENT_TIMEOUT_SECONDS }),
-});
-const sillokAgentRunner = createSillokAgentRunner({
-  summaryJobs: meetingSummaryJobService,
-  handler: sillokSummaryHandler,
-  targetUserId: DEFAULT_TODO_QUEUE_BOT_USER_ID,
-  intervalMs: SILLOK_AGENT_RUNNER_POLL_MS,
-});
 const sillokSummaryReconciler = createSillokSummaryReconciler({
   summaryJobs: meetingSummaryJobService,
   dispatcher: sillokSummaryDispatcher,
@@ -2357,11 +2317,9 @@ const sillokSummaryReconciler = createSillokSummaryReconciler({
 });
 if (SILLOK_SUMMARY_DISPATCH_ENABLED) {
   sillokSummaryDispatcher.start();
-  sillokAgentRunner.start();
   sillokSummaryReconciler.start();
 } else {
   console.log("[sillok-summary-dispatcher] disabled");
-  console.log("[sillok-agent-runner] disabled");
   console.log("[sillok-summary-reconciler] disabled");
 }
 

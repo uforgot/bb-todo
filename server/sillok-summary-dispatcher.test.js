@@ -92,14 +92,17 @@ test("dispatches a bounded locator with an explicit mention and records acknowle
   assert.deepEqual(sent.allowedUserIds, ["1471495923400970377"]);
   assert.equal(sent.enforceNonce, true);
   assert.equal(sent.nonce, buildDiscordMessageNonce(job.id, 1));
-  assert.match(sent.content, /^<@1471495923400970377>\n\[SILLOK_SUMMARY_JOB_V1\]/);
+  assert.match(sent.content, /^<@1471495923400970377> 실록 공유 기억 작업을 직접 처리해 줘/);
+  assert.match(sent.content, /\[SILLOK_SUMMARY_JOB_V1\]/);
   assert.match(sent.content, /record_id: record-private-1/);
   assert.match(sent.content, /record_number: 21/);
   assert.match(sent.content, new RegExp(`job_id: ${job.id}`));
   assert.match(sent.content, /attempt_id: id-2/);
   assert.match(sent.content, /nonce: attempt-nonce-1/);
   assert.match(sent.content, new RegExp(`callback: /api/meeting-summary-jobs/${job.id}/result`));
-  assert.doesNotMatch(sent.content, /회의 원문|서울|서대문구|기존 요약|비공개 제목|transcript|location|memory/i);
+  assert.match(sent.content, new RegExp(`sillok-summary-ops\\.js prepare ${job.id} id-2 attempt-nonce-1`));
+  assert.match(sent.content, new RegExp(`sillok-summary-ops\\.js complete ${job.id} id-2 attempt-nonce-1`));
+  assert.doesNotMatch(sent.content, /회의 원문|서울|서대문구|기존 요약|비공개 제목|<UNTRUSTED_TRANSCRIPT>|<RELEVANT_MEMORY>/i);
 
   const stored = fixture.summaryJobs.getJob(job.id);
   assert.equal(stored.status, "awaiting_agent");
