@@ -263,6 +263,7 @@ test("adds only coarse recording context to the Agent prompt", () => {
   assert.match(prompt.system, /summary는 앱에 남는 독립적인 사실 요약/);
   assert.match(prompt.system, /신빵에게 말을 거는 표현이나 빵빵의 의견·질문·조언을 섞지 말고/);
   assert.match(prompt.system, /feedback은 bb-write에서 신빵에게 건네는 빵빵의 별도 대화/);
+  assert.match(prompt.system, /빈 줄을 넣어 2~3개의 짧은 문단으로 나눈다/);
   assert.match(prompt.system, /feedback의 종류·문장 수·결론 형식은 강제하지 않는다/);
   assert.match(prompt.system, /억지 농담/);
   assert.match(prompt.system, /speaker_names/);

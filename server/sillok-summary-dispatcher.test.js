@@ -103,7 +103,7 @@ test("dispatches a bounded locator with an explicit mention and records acknowle
   assert.match(sent.content, new RegExp(`sillok-summary-ops\\.js prepare ${job.id} id-2 attempt-nonce-1`));
   assert.match(sent.content, new RegExp(`sillok-summary-ops\\.js complete ${job.id} id-2 attempt-nonce-1`));
   assert.match(sent.content, /title, summary, feedback, speaker_names, model JSON/);
-  assert.match(sent.content, /Discord 최종 답변에는 생성한 feedback 텍스트만 그대로 보내/);
+  assert.match(sent.content, /feedback의 문단 사이 빈 줄을 그대로 보존해/);
   assert.doesNotMatch(sent.content, /요약 완료/);
   assert.doesNotMatch(sent.content, /회의 원문|서울|서대문구|기존 요약|비공개 제목|<UNTRUSTED_TRANSCRIPT>|<RELEVANT_MEMORY>/i);
 
