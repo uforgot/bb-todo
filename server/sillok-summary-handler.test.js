@@ -260,8 +260,20 @@ test("adds only coarse recording context to the Agent prompt", () => {
   assert.doesNotMatch(prompt.user, /37\.5|126\.9|latitude|longitude/);
   assert.match(prompt.system, /의미가 있을 때만/);
   assert.match(prompt.system, /신빵에게 직접 말하듯/);
+  assert.match(prompt.system, /빵빵 자신의 구체적인 판단이나 피드백/);
+  assert.match(prompt.system, /다음 생각이나 행동에 활용/);
+  assert.match(prompt.system, /재미보다 빵빵의 유용한 의견이 우선/);
   assert.match(prompt.system, /억지 농담/);
   assert.match(prompt.system, /speaker_names/);
+});
+
+test("accepts a six-sentence summary with grounded Agent feedback", () => {
+  const result = validateGeneratedSummary({
+    title: "내용과 피드백",
+    summary: "첫 문장은 사실을 정리해. 둘째 문장도 기록을 이어가. 셋째 문장은 결정을 남겨. 넷째 문장은 미결점을 짚어. 내 판단에는 범위를 먼저 줄이는 게 좋아 보여. 다음에는 작은 검증부터 해보는 걸 추천해.",
+    speaker_names: {},
+  });
+  assert.match(result.summary, /추천해/);
 });
 
 test("accepts only confident 신빵 speaker mappings", () => {
