@@ -23,6 +23,10 @@ const Database = require("better-sqlite3");
 const sharp = require("sharp");
 const { scanDependencies } = require("./dependency-scanner");
 const { createMeetingSummaryGenerator } = require("./meeting-summary");
+const {
+  migrateMeetingSummaryJobsSchema,
+  createMeetingSummaryJobService,
+} = require("./meeting-summary-jobs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
 const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
@@ -57,6 +61,7 @@ const REVIEW_ATTACHMENTS_DIR = process.env.REVIEW_ATTACHMENTS_DIR || path.join(_
 const REVIEW_ATTACHMENTS_MAX_BYTES = parseInt(process.env.REVIEW_ATTACHMENTS_MAX_BYTES || String(20 * 1024 * 1024), 10);
 const MEETING_ARCHIVE_DIR = process.env.MEETING_ARCHIVE_DIR || path.join(os.homedir(), "Documents", "MeetingArchive");
 const MEETING_UPLOAD_MAX_BYTES = parseInt(process.env.MEETING_UPLOAD_MAX_BYTES || String(512 * 1024 * 1024), 10);
+const MEETING_AGENT_SUMMARY_ENABLED = /^true$/i.test(process.env.MEETING_AGENT_SUMMARY_ENABLED || "");
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
 const DEFAULT_TODO_QUEUE_BOT_KEY = process.env.TODO_QUEUE_BOT_KEY || "bbangbbang";
 const DEFAULT_TODO_QUEUE_BOT_USER_ID = process.env.TODO_QUEUE_BOT_USER_ID || process.env.BBANGBBANG_USER_ID || "1471495923400970377";
@@ -190,6 +195,7 @@ try {
      WHERE summary_status IN ('queued','processing');
   `);
 } catch {}
+migrateMeetingSummaryJobsSchema(db);
 try {
   const missingRecordNumbers = db.prepare(`
     SELECT id FROM meetings
@@ -2246,6 +2252,17 @@ function broadcastSSE(event, data = {}) {
   }
 }
 
+const meetingSummaryJobService = createMeetingSummaryJobService({
+  db,
+  onCompleted: ({ recordId, generation }) => {
+    broadcastSSE("meeting-summary", { meetingId: recordId, generation, status: "completed" });
+  },
+});
+const recoveredMeetingSummaryJobs = meetingSummaryJobService.recoverInterruptedJobs();
+if (recoveredMeetingSummaryJobs > 0) {
+  console.log(`[meeting-summary-jobs] recovered ${recoveredMeetingSummaryJobs} interrupted job(s)`);
+}
+
 // Heartbeat — 좀비 커넥션 정리 (30초마다 ping)
 setInterval(() => {
   for (const client of sseClients) {
@@ -2772,7 +2789,11 @@ async function processMeetingTranscription(meetingId) {
       meetingId
     );
     broadcastSSE("meeting-transcription", { meetingId, status: "completed", speakers: [...new Set(segments.map(segment => segment.speaker_id))] });
-    queueMeetingSummary(meetingId, true);
+    if (MEETING_AGENT_SUMMARY_ENABLED) {
+      meetingSummaryJobService.createJob(meetingId, { trigger: "transcription_completed" });
+    } else {
+      queueMeetingSummary(meetingId, true);
+    }
   } catch (error) {
     const message = String(error?.message || error || "transcription failed").slice(0, 2000);
     db.prepare(`
@@ -2935,6 +2956,105 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify(serializeMeeting(req, row)));
       } catch (error) {
         sendError(res, Number(error?.statusCode) || 500, error.message || "failed to retry transcription");
+      }
+
+    } else if (url.pathname === "/api/meeting-summary-jobs" && req.method === "GET") {
+      try {
+        const jobs = meetingSummaryJobService.listJobs({
+          status: url.searchParams.get("status") || "pending",
+          limit: url.searchParams.get("limit"),
+        });
+        sendJson(res, 200, { jobs });
+      } catch (error) {
+        sendJson(res, Number(error?.statusCode) || 500, {
+          error: error.message || "failed to list summary jobs",
+          error_code: error.code || "summary_job_error",
+        });
+      }
+
+    } else if (url.pathname.match(/^\/api\/meeting-summary-jobs\/[a-zA-Z0-9_-]+$/) && req.method === "GET") {
+      const jobId = url.pathname.split("/")[3];
+      try {
+        sendJson(res, 200, meetingSummaryJobService.getJob(jobId));
+      } catch (error) {
+        sendJson(res, Number(error?.statusCode) || 500, {
+          error: error.message || "failed to get summary job",
+          error_code: error.code || "summary_job_error",
+        });
+      }
+
+    } else if (url.pathname.match(/^\/api\/meeting-summary-jobs\/[a-zA-Z0-9_-]+\/(attempt|dispatched|claim|result|fail|retry)$/) && req.method === "POST") {
+      const [, , , jobId, action] = url.pathname.split("/");
+      const rawBody = await parseBody(req);
+      const body = rawBody ? JSON.parse(rawBody) : {};
+      try {
+        let result;
+        if (action === "attempt") {
+          result = meetingSummaryJobService.startAttempt(jobId);
+        } else if (action === "dispatched") {
+          result = meetingSummaryJobService.markDispatched(jobId, {
+            attemptId: body.attempt_id,
+            nonce: body.nonce,
+            channelId: body.discord_channel_id,
+            messageId: body.discord_message_id,
+          });
+        } else if (action === "claim") {
+          result = meetingSummaryJobService.claimJob(jobId, {
+            attemptId: body.attempt_id,
+            nonce: body.nonce,
+            agent: body.agent,
+            schemaVersion: body.schema_version,
+          });
+        } else if (action === "result") {
+          result = meetingSummaryJobService.completeJob(jobId, {
+            attemptId: body.attempt_id,
+            nonce: body.nonce,
+            schemaVersion: body.schema_version,
+            title: body.title,
+            summary: body.summary,
+            model: body.model,
+            agent: body.agent,
+            contextMode: body.context_mode,
+          });
+        } else if (action === "fail") {
+          result = meetingSummaryJobService.failAttempt(jobId, {
+            attemptId: body.attempt_id,
+            nonce: body.nonce,
+            errorCode: body.error_code,
+            error: body.error,
+            retryable: body.retryable !== false,
+            nextAttemptAt: body.next_attempt_at || null,
+          });
+        } else {
+          result = meetingSummaryJobService.retryJob(jobId);
+        }
+        sendJson(res, action === "attempt" ? 201 : 200, result);
+      } catch (error) {
+        sendJson(res, Number(error?.statusCode) || 500, {
+          error: error.message || "summary job operation failed",
+          error_code: error.code || "summary_job_error",
+        });
+      }
+
+    } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/summary\/agent$/) && req.method === "POST") {
+      const meetingId = normalizeMeetingId(url.pathname.split("/")[3]);
+      if (!meetingId) {
+        sendError(res, 400, "invalid meeting id");
+        return;
+      }
+      const rawBody = await parseBody(req);
+      const body = rawBody ? JSON.parse(rawBody) : {};
+      try {
+        const job = meetingSummaryJobService.createJob(meetingId, {
+          trigger: body.trigger || "manual",
+          regenerate: body.regenerate === true,
+        });
+        sendJson(res, 202, job);
+      } catch (error) {
+        sendJson(res, Number(error?.statusCode) || 500, {
+          error: error.message || "failed to create summary job",
+          error_code: error.code || "summary_job_error",
+        });
       }
 
     } else if (url.pathname.match(/^\/api\/meetings\/[a-zA-Z0-9_-]+\/summary\/retry$/) && req.method === "POST") {
