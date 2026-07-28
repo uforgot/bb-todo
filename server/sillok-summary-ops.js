@@ -63,6 +63,7 @@ async function prepareAgentTurn(jobId, attemptId, nonce) {
   const prompt = buildSummaryPrompt({
     transcript,
     context,
+    recordingContext: meeting?.context,
     recordNumber: claim.record_number,
   });
   return {

@@ -6,6 +6,13 @@ const path = require("path");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
+const {
+  normalizeLocation,
+  distanceMeters,
+  resolveLocationLabel,
+  buildTimeLabel,
+  readWeatherSnapshot,
+} = require("./recording-context");
 
 const execFileAsync = promisify(execFile);
 
@@ -35,8 +42,6 @@ const ABLY_CHANNEL = process.env.ABLY_VOICE_CHANNEL || "bb-voice";
 const VOICE_WEBHOOK_URL = process.env.DISCORD_VOICE_WEBHOOK_URL || ""; // hint 박을 webhook
 const VOICE_THREAD_ID = process.env.DISCORD_VOICE_THREAD_ID || "";
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
-const PLACES_API_URL = process.env.BB_ADMIN_PLACES_API_URL || "http://127.0.0.1:3000/api/places";
-const PLACES_CACHE_TTL_MS = Number(process.env.PLACES_CACHE_TTL_MS || 30_000);
 const FACE_CLI_PATH = process.env.FACE_CLI_PATH || path.join(process.env.HOME || "", ".openclaw/workspace/scripts/face");
 const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD || 0.4);
 const DISCORD_IMAGE_DIR = path.join(__dirname, "images", "discord-face");
@@ -160,164 +165,6 @@ function createSettledMessageBuffer({ delayMs, onSettle }) {
   };
 }
 
-let placesCache = { expiresAt: 0, places: [] };
-const GEOCODE_API_KEY = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_PLACE_API_KEY || "";
-const GEOCODE_CACHE_TTL_MS = Number(process.env.GEOCODE_CACHE_TTL_MS || 24 * 60 * 60 * 1000);
-const geocodeCache = new Map(); // key: "lat4,lng4" → { name, expiresAt }
-
-function pickAddressPart(result, types) {
-  const components = Array.isArray(result?.address_components) ? result.address_components : [];
-  return components.find((component) => types.some((type) => component.types?.includes(type)))?.long_name || "";
-}
-
-function shortenKoreanCity(name) {
-  if (!name) return "";
-  return name
-    .replace(/특별시$/, "")
-    .replace(/광역시$/, "")
-    .replace(/특별자치시$/, "")
-    .replace(/특별자치도$/, "")
-    .replace(/도$/, "");
-}
-
-function formatCoarseAddress(results) {
-  for (const result of results) {
-    const dong = pickAddressPart(result, ["sublocality_level_2", "sublocality_level_3", "neighborhood"]);
-    const gu = pickAddressPart(result, ["sublocality_level_1", "administrative_area_level_2"]);
-    const cityRaw = pickAddressPart(result, ["locality", "administrative_area_level_1"]);
-    const city = shortenKoreanCity(cityRaw);
-    const area = gu && dong ? `${gu} ${dong}` : dong || gu || "";
-    if (area && city && area !== city) return `${area}, ${city}`;
-    if (area) return area;
-    if (city) return city;
-  }
-  return "";
-}
-
-async function reverseGeocodeDong(location) {
-  if (!GEOCODE_API_KEY) return "";
-  const key = `${location.lat.toFixed(4)},${location.lng.toFixed(4)}`;
-  const now = Date.now();
-  const cached = geocodeCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.name;
-
-  try {
-    const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
-    url.searchParams.set("latlng", `${location.lat},${location.lng}`);
-    url.searchParams.set("language", "ko");
-    url.searchParams.set("key", GEOCODE_API_KEY);
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) throw new Error(`geocode ${res.status}`);
-    const data = await res.json();
-    const results = Array.isArray(data?.results) ? data.results : [];
-    const address = formatCoarseAddress(results);
-    geocodeCache.set(key, { name: address, expiresAt: now + GEOCODE_CACHE_TTL_MS });
-    return address;
-  } catch (e) {
-    console.warn("[voice-bridge] reverse geocode failed:", e.message);
-    return "";
-  }
-}
-
-function normalizeLocation(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const lat = Number(raw.lat);
-  const lng = Number(raw.lng);
-  const accuracy = Number(raw.accuracy);
-  const ts = typeof raw.ts === "string" ? raw.ts : null;
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
-  return {
-    lat,
-    lng,
-    accuracy: Number.isFinite(accuracy) ? accuracy : null,
-    ts,
-  };
-}
-
-function summarizeLocationForLog(rawLocation) {
-  const location = normalizeLocation(rawLocation);
-  if (!rawLocation) return "missing";
-  if (!location) return `invalid keys=${Object.keys(rawLocation || {}).join(",") || "none"}`;
-  const accuracy = location.accuracy == null ? "unknown" : `${Math.round(location.accuracy)}m`;
-  return `present accuracy=${accuracy} ts=${location.ts ? "yes" : "no"}`;
-}
-
-function distanceMeters(a, b) {
-  const toRad = (deg) => deg * Math.PI / 180;
-  const earthRadiusM = 6_371_000;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * earthRadiusM * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-}
-
-async function fetchPlaces() {
-  const now = Date.now();
-  if (placesCache.expiresAt > now) return placesCache.places;
-
-  const res = await fetch(PLACES_API_URL, { signal: AbortSignal.timeout(3000) });
-  if (!res.ok) throw new Error(`places API ${res.status}`);
-  const data = await res.json();
-  const places = Array.isArray(data?.places) ? data.places : [];
-  placesCache = { expiresAt: now + PLACES_CACHE_TTL_MS, places };
-  return places;
-}
-
-async function resolveLocationLabel(rawLocation) {
-  const location = normalizeLocation(rawLocation);
-  if (!location) return "";
-
-  let aliasName = "";
-  try {
-    const places = await fetchPlaces();
-    let best = null;
-    for (const place of places) {
-      const lat = Number(place.lat);
-      const lng = Number(place.lng);
-      const radiusM = Number.isFinite(Number(place.radiusM)) ? Number(place.radiusM) : 100;
-      if (!place?.name || !Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-      const distanceM = distanceMeters(location, { lat, lng });
-      if (distanceM <= radiusM && (!best || distanceM < best.distanceM)) {
-        best = { name: String(place.name), distanceM, radiusM };
-      }
-    }
-    if (best) {
-      console.log(`[voice-bridge] location matched: ${best.name} (${Math.round(best.distanceM)}m/${best.radiusM}m)`);
-      aliasName = best.name;
-    }
-  } catch (e) {
-    console.warn("[voice-bridge] places lookup failed:", e.message);
-  }
-
-  const dong = await reverseGeocodeDong(location);
-  if (aliasName && dong) return `${aliasName} (${dong})`;
-  if (aliasName) return aliasName;
-  if (dong) {
-    console.log(`[voice-bridge] location geocoded: ${dong}`);
-    return dong;
-  }
-  return "";
-}
-
-function buildTimeLabel(date = new Date()) {
-  const weekdays = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
-  const day = weekdays[date.getDay()];
-  const h = date.getHours();
-  const m = date.getMinutes();
-  let period;
-  if (h >= 6 && h < 11) period = "오전";
-  else if (h >= 11 && h < 14) period = "점심";
-  else if (h >= 14 && h < 18) period = "오후";
-  else if (h >= 18 && h < 22) period = "저녁";
-  else period = "밤";
-  const hh = String(h).padStart(2, "0");
-  const mm = String(m).padStart(2, "0");
-  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${day} ${period} ${hh}:${mm}`;
-}
-
 // 양력 고정 + 한국 기념일/명절 + 음력 명절(연도별 매핑)
 const FIXED_HOLIDAYS = {
   "01-01": "신정",
@@ -369,31 +216,6 @@ function summarizeVoiceContextForLog(text) {
   return `${time} | ${loc} | ${photo}`;
 }
 
-const WEATHER_CACHE_PATH = "/tmp/bb-weather.json";
-const WEATHER_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const CITY_LABELS_KO = { Seoul: "서울" };
-
-function readWeatherLabel() {
-  try {
-    const raw = fs.readFileSync(WEATHER_CACHE_PATH, "utf8");
-    const data = JSON.parse(raw);
-    const updatedAt = Number(data && data.updated_at);
-    if (!Number.isFinite(updatedAt)) return null;
-    const ageMs = Date.now() - updatedAt * 1000;
-    if (ageMs < 0 || ageMs > WEATHER_MAX_AGE_MS) return null;
-    const temp = Number(data.temp_c);
-    if (!Number.isFinite(temp)) return null;
-    const desc = String(data.desc || "").trim();
-    const cityRaw = String(data.city || "").trim();
-    const cityLabel = CITY_LABELS_KO[cityRaw] || cityRaw;
-    const tempPart = `${Math.round(temp)}도`;
-    const head = desc ? `${tempPart}, ${desc}` : tempPart;
-    return cityLabel ? `${head} (${cityLabel})` : head;
-  } catch (_) {
-    return null;
-  }
-}
-
 function createVoiceFinalMarker() {
   return `(BBVOICE_FINAL:${crypto.randomBytes(4).toString("hex").toUpperCase()})`;
 }
@@ -428,7 +250,7 @@ async function buildVoiceRequestText(userText, { location, faceContext, finalMar
   const locationLabel = await resolveLocationLabel(location);
   const hasLocation = Boolean(locationLabel);
   const hasPhoto = Boolean(faceContext);
-  const weatherLabel = readWeatherLabel();
+  const weatherLabel = readWeatherSnapshot()?.label || null;
 
   const voiceBullets = [
     "Voice reply. Answer like a short natural conversation.",
@@ -441,7 +263,7 @@ async function buildVoiceRequestText(userText, { location, faceContext, finalMar
     voiceBullets.push("Keep the marker unchanged and make it the final characters. Never include it in progress updates or commentary.");
   }
 
-  const timeLabel = buildTimeLabel();
+  const timeLabel = buildTimeLabel(new Date());
   const holidayLabel = buildHolidayLabel();
   const dataLines = [];
   dataLines.push(`Time: ${timeLabel}`);

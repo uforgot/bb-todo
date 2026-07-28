@@ -29,6 +29,12 @@ const {
 } = require("./meeting-summary-jobs");
 const { createSillokSummaryDispatcher } = require("./sillok-summary-dispatcher");
 const { createSillokSummaryReconciler } = require("./sillok-summary-reconciler");
+const {
+  normalizeLocation,
+  resolveLocationLabel,
+  buildTimeLabel,
+  readWeatherSnapshot,
+} = require("./recording-context");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createTodayQueueService } = require("./today-queue-service");
 const { migrateTodayQueueHistorySchema } = require("./today-queue-history-schema");
@@ -193,6 +199,14 @@ try { db.exec("ALTER TABLE meetings ADD COLUMN summary_status TEXT DEFAULT 'idle
 try { db.exec("ALTER TABLE meetings ADD COLUMN summary_model TEXT"); } catch {}
 try { db.exec("ALTER TABLE meetings ADD COLUMN summary_error TEXT"); } catch {}
 try { db.exec("ALTER TABLE meetings ADD COLUMN summary_updated_at TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN location_lat REAL"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN location_lng REAL"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN location_accuracy REAL"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN location_timestamp TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN location_label TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN time_label TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN weather_label TEXT"); } catch {}
+try { db.exec("ALTER TABLE meetings ADD COLUMN weather_observed_at TEXT"); } catch {}
 try {
   db.exec(`
     UPDATE meetings
@@ -2394,6 +2408,14 @@ function serializeMeeting(req, row) {
     size_bytes: row.size_bytes,
     duration_seconds: row.duration_seconds,
     sha256: row.sha256,
+    context: {
+      time: row.time_label || buildTimeLabel(row.recorded_at),
+      location: row.location_label || null,
+      location_available: Number.isFinite(row.location_lat) && Number.isFinite(row.location_lng),
+      location_accuracy: row.location_accuracy ?? null,
+      weather: row.weather_label || null,
+      weather_observed_at: row.weather_observed_at || null,
+    },
     transcription: {
       status: row.transcription_status || "idle",
       attempts: row.transcription_attempts || 0,
@@ -2442,6 +2464,25 @@ async function receiveMeetingAudio(req, meetingId) {
 
   const recordedAt = existing?.recorded_at || recordedAtDate.toISOString();
   const recordedDate = existing?.recorded_date || normalizeMeetingDate(req.headers["x-recorded-date"], recordedAt);
+  const uploadedLocation = normalizeLocation({
+    lat: req.headers["x-location-lat"],
+    lng: req.headers["x-location-lng"],
+    accuracy: req.headers["x-location-accuracy"],
+    ts: req.headers["x-location-timestamp"],
+  });
+  const location = uploadedLocation || (Number.isFinite(existing?.location_lat) && Number.isFinite(existing?.location_lng)
+    ? {
+        lat: existing.location_lat,
+        lng: existing.location_lng,
+        accuracy: existing.location_accuracy,
+        ts: existing.location_timestamp,
+      }
+    : null);
+  const locationLabel = existing?.location_label || await resolveLocationLabel(location).catch(() => "");
+  const weather = existing?.weather_label
+    ? { label: existing.weather_label, observedAt: existing.weather_observed_at }
+    : readWeatherSnapshot(recordedAtDate.getTime());
+  const timeLabel = existing?.time_label || buildTimeLabel(recordedAt);
   const [year, month, day] = recordedDate.split("-");
   const requestedName = path.basename(String(req.headers["x-original-filename"] || "meeting.m4a"));
   const requestedExtension = path.extname(requestedName).slice(1).toLowerCase();
@@ -2484,8 +2525,10 @@ async function receiveMeetingAudio(req, meetingId) {
   db.prepare(`
     INSERT INTO meetings (
       id, record_number, recorded_at, recorded_date, audio_path, original_filename,
-      mime_type, size_bytes, duration_seconds, sha256, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      mime_type, size_bytes, duration_seconds, sha256,
+      location_lat, location_lng, location_accuracy, location_timestamp, location_label,
+      time_label, weather_label, weather_observed_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(id) DO UPDATE SET
       audio_path=excluded.audio_path,
       original_filename=excluded.original_filename,
@@ -2493,6 +2536,14 @@ async function receiveMeetingAudio(req, meetingId) {
       size_bytes=excluded.size_bytes,
       duration_seconds=excluded.duration_seconds,
       sha256=excluded.sha256,
+      location_lat=COALESCE(excluded.location_lat, meetings.location_lat),
+      location_lng=COALESCE(excluded.location_lng, meetings.location_lng),
+      location_accuracy=COALESCE(excluded.location_accuracy, meetings.location_accuracy),
+      location_timestamp=COALESCE(excluded.location_timestamp, meetings.location_timestamp),
+      location_label=COALESCE(excluded.location_label, meetings.location_label),
+      time_label=COALESCE(excluded.time_label, meetings.time_label),
+      weather_label=COALESCE(excluded.weather_label, meetings.weather_label),
+      weather_observed_at=COALESCE(excluded.weather_observed_at, meetings.weather_observed_at),
       audio_deleted_at=NULL,
       transcription_status='idle',
       transcription_error=NULL,
@@ -2520,7 +2571,15 @@ async function receiveMeetingAudio(req, meetingId) {
     mimeType,
     sizeBytes,
     durationSeconds,
-    sha256
+    sha256,
+    location?.lat ?? null,
+    location?.lng ?? null,
+    location?.accuracy ?? null,
+    location?.ts ?? null,
+    locationLabel || null,
+    timeLabel || null,
+    weather?.label || null,
+    weather?.observedAt || null
   );
 
   return db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);

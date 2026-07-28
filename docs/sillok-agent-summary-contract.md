@@ -39,6 +39,18 @@ The replacement keeps the public `summary_generation` shape compatible for bb-ap
 | User and project context | OpenClaw workspace memory | Read by the Agent at execution time; not copied into the job row. |
 | Discord message | Discord | Wake-up signal only; safe to lose or duplicate. |
 
+## Recording context
+
+The iOS app captures one optional Core Location sample when recording begins and uploads latitude, longitude, accuracy, and the location timestamp with the audio. Raw coordinates are stored only in the local `meetings` table and are never serialized to the Agent or Discord.
+
+At upload time the server reuses the voice context resolver to create bounded labels:
+
+- `Time`: derived from the immutable `recorded_at` timestamp in `Asia/Seoul`;
+- `Loc`: a configured place alias and/or coarse district label;
+- `Weather`: a fresh weather-cache snapshot with its observation timestamp.
+
+`prepare` fetches these labels through the authenticated meeting API and places them inside an untrusted `RECORDING_CONTEXT` block. The Agent may use them only when they add meaning and must not force them into every title or summary. Location permission denial, unavailable coordinates, place lookup failure, reverse-geocoding failure, and missing or stale weather all degrade to nullable fields; none may block recording, upload, transcription, or summary generation.
+
 ## State machine
 
 ```text
