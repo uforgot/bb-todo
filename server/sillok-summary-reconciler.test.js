@@ -15,15 +15,17 @@ function createFixture({ maxAttempts = 5, backoffScheduleMs = [30_000, 120_000, 
   db.exec(`
     CREATE TABLE meetings (
       id TEXT PRIMARY KEY, record_number INTEGER, transcription_status TEXT,
-      transcript TEXT, title TEXT, title_source TEXT, summary TEXT,
+      transcript TEXT, transcription_words_json TEXT, transcription_segments_json TEXT,
+      speaker_names_json TEXT, title TEXT, title_source TEXT, summary TEXT,
       summary_status TEXT, summary_model TEXT, summary_error TEXT,
       summary_updated_at TEXT, updated_at TEXT
     );
   `);
   db.prepare(`
     INSERT INTO meetings VALUES (
-      'record-1', 41, 'completed', '복구 테스트 회의 원문', '기존 제목', 'user',
-      '기존에 게시된 요약', 'completed', 'old/model', NULL, NULL, ?
+      'record-1', 41, 'completed', 'speaker_0: 복구 테스트 회의 원문',
+      '[{"speaker_id":"speaker_0"}]', '[{"speaker_id":"speaker_0"}]', '{}',
+      '기존 제목', 'user', '기존에 게시된 요약', 'completed', 'old/model', NULL, NULL, ?
     )
   `).run("2026-07-28T04:00:00.000Z");
   migrateMeetingSummaryJobsSchema(db);

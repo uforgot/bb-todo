@@ -12,6 +12,7 @@ const {
   parseSillokGatewayPacket,
   collectMemoryContext,
   buildSummaryPrompt,
+  validateGeneratedSummary,
   createSillokSummaryHandler,
 } = require("./sillok-summary-handler");
 
@@ -58,6 +59,9 @@ function createFixture({ transcript, generator, writebackTimeoutOnce = false }) 
       record_number INTEGER,
       transcription_status TEXT,
       transcript TEXT,
+      transcription_words_json TEXT,
+      transcription_segments_json TEXT,
+      speaker_names_json TEXT,
       title TEXT,
       title_source TEXT,
       summary TEXT,
@@ -70,9 +74,14 @@ function createFixture({ transcript, generator, writebackTimeoutOnce = false }) 
   `);
   db.prepare(`
     INSERT INTO meetings (
-      id, record_number, transcription_status, transcript, title, title_source,
-      summary, summary_status, summary_model, updated_at
-    ) VALUES ('record-1', 31, 'completed', ?, '사용자 제목', 'user', '기존 요약', 'completed', 'old/model', ?)
+      id, record_number, transcription_status, transcript,
+      transcription_words_json, transcription_segments_json, speaker_names_json,
+      title, title_source, summary, summary_status, summary_model, updated_at
+    ) VALUES (
+      'record-1', 31, 'completed', ?,
+      '[{"speaker_id":"speaker_0"}]', '[{"speaker_id":"speaker_0"}]', '{}',
+      '사용자 제목', 'user', '기존 요약', 'completed', 'old/model', ?
+    )
   `).run(transcript, "2026-07-28T04:30:00.000Z");
   migrateMeetingSummaryJobsSchema(db);
   let id = 0;
@@ -121,6 +130,7 @@ function createFixture({ transcript, generator, writebackTimeoutOnce = false }) 
         schemaVersion: 1,
         title: result.title,
         summary: result.summary,
+        speakerNames: result.speakerNames,
         model: result.model,
         agent: result.agent,
         contextMode: result.contextMode,
@@ -235,6 +245,25 @@ test("adds only coarse recording context to the Agent prompt", () => {
   assert.match(prompt.user, /Weather: 29도, 흐림/);
   assert.doesNotMatch(prompt.user, /37\.5|126\.9|latitude|longitude/);
   assert.match(prompt.system, /의미가 있을 때만/);
+  assert.match(prompt.system, /신빵에게 직접 말하듯/);
+  assert.match(prompt.system, /억지 농담/);
+  assert.match(prompt.system, /speaker_names/);
+});
+
+test("accepts only confident 신빵 speaker mappings", () => {
+  assert.deepEqual(validateGeneratedSummary({
+    title: "신빵의 기록",
+    summary: "신빵, 오늘 이야기는 꽤 바빴네. 그래도 중요한 순서는 잘 잡았어. 다음 기록에서 이어서 보자.",
+    speaker_names: { speaker_0: "신빵" },
+  }).speakerNames, { speaker_0: "신빵" });
+  assert.throws(
+    () => validateGeneratedSummary({
+      title: "잘못된 이름",
+      summary: "첫 문장이다. 둘째 문장이다. 셋째 문장이다.",
+      speaker_names: { speaker_0: "형주" },
+    }),
+    error => error.code === "invalid_speaker_names",
+  );
 });
 
 test("treats transcript prompt injection as quoted data and does not leak unrelated memory", async () => {

@@ -3141,6 +3141,7 @@ const server = http.createServer(async (req, res) => {
             schemaVersion: body.schema_version,
             title: body.title,
             summary: body.summary,
+            speakerNames: body.speaker_names,
             model: body.model,
             agent: body.agent,
             contextMode: body.context_mode,

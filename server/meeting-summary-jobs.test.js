@@ -14,6 +14,9 @@ function createFixture({ title = "기존 제목", titleSource = "default" } = {}
       record_number INTEGER,
       transcription_status TEXT,
       transcript TEXT,
+      transcription_words_json TEXT,
+      transcription_segments_json TEXT,
+      speaker_names_json TEXT,
       title TEXT,
       title_source TEXT,
       summary TEXT,
@@ -26,9 +29,14 @@ function createFixture({ title = "기존 제목", titleSource = "default" } = {}
   `);
   db.prepare(`
     INSERT INTO meetings (
-      id, record_number, transcription_status, transcript, title, title_source,
-      summary, summary_status, summary_model, updated_at
-    ) VALUES ('record-1', 16, 'completed', '회의 원문', ?, ?, '기존 요약', 'completed', 'old/model', ?)
+      id, record_number, transcription_status, transcript,
+      transcription_words_json, transcription_segments_json, speaker_names_json,
+      title, title_source, summary, summary_status, summary_model, updated_at
+    ) VALUES (
+      'record-1', 16, 'completed', 'speaker_0: 회의 원문',
+      '[{"speaker_id":"speaker_0"}]', '[{"speaker_id":"speaker_0"}]', '{}',
+      ?, ?, '기존 요약', 'completed', 'old/model', ?
+    )
   `).run(title, titleSource, "2026-07-28T00:00:00.000Z");
   migrateMeetingSummaryJobsSchema(db);
 
@@ -79,6 +87,7 @@ function resultPayload(attempt, overrides = {}) {
     schemaVersion: 1,
     title: "맥락을 반영한 제목",
     summary: "형주의 프로젝트 맥락을 반영한 자연스러운 요약이다.",
+    speakerNames: {},
     model: "openai/gpt-5.6-sol",
     agent: "bbangbbang",
     contextMode: "openclaw_memory",
@@ -128,6 +137,35 @@ test("completes exactly once, preserves a user title, and accepts identical repl
     () => service.completeJob(job.id, resultPayload(attempt, { summary: "충돌하는 결과" })),
     error => error.code === "result_conflict" && error.statusCode === 409,
   );
+  db.close();
+});
+
+test("stores a confident 신빵 speaker mapping and preserves existing user names", () => {
+  const { db, service } = createFixture();
+  db.prepare("UPDATE meetings SET speaker_names_json=? WHERE id='record-1'").run(JSON.stringify({ speaker_1: "유리" }));
+  db.prepare("UPDATE meetings SET transcription_segments_json=? WHERE id='record-1'")
+    .run(JSON.stringify([{ speaker_id: "speaker_0" }, { speaker_id: "speaker_1" }]));
+  const job = service.createJob("record-1");
+  const attempt = beginProcessing(service, job.id);
+
+  service.completeJob(job.id, resultPayload(attempt, { speakerNames: { speaker_0: "신빵" } }));
+
+  assert.deepEqual(
+    JSON.parse(db.prepare("SELECT speaker_names_json FROM meetings WHERE id='record-1'").get().speaker_names_json),
+    { speaker_0: "신빵", speaker_1: "유리" },
+  );
+  db.close();
+});
+
+test("rejects an invented speaker ID", () => {
+  const { db, service } = createFixture();
+  const job = service.createJob("record-1");
+  const attempt = beginProcessing(service, job.id);
+  assert.throws(
+    () => service.completeJob(job.id, resultPayload(attempt, { speakerNames: { speaker_99: "신빵" } })),
+    error => error.code === "unknown_speaker_id" && error.statusCode === 400,
+  );
+  assert.equal(service.getJob(job.id).status, "processing");
   db.close();
 });
 

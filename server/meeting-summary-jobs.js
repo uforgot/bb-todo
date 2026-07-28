@@ -314,10 +314,23 @@ function createMeetingSummaryJobService({
     };
   }
 
-  function canonicalResult({ title, summary, model, agent, contextMode }) {
+  function canonicalResult({ title, summary, speakerNames, model, agent, contextMode }) {
+    const normalizedSpeakerNames = {};
+    if (speakerNames != null) {
+      if (typeof speakerNames !== "object" || Array.isArray(speakerNames)) {
+        throw serviceError(400, "invalid_speaker_names", "speaker_names must be an object");
+      }
+      for (const speakerId of Object.keys(speakerNames).sort()) {
+        if (!/^[a-zA-Z0-9_-]{1,64}$/.test(speakerId) || speakerNames[speakerId] !== "신빵") {
+          throw serviceError(400, "invalid_speaker_names", "speaker_names may only map transcript speaker IDs to 신빵");
+        }
+        normalizedSpeakerNames[speakerId] = "신빵";
+      }
+    }
     const result = {
       title: bounded(title, 80),
       summary: bounded(summary, 4000),
+      speaker_names: normalizedSpeakerNames,
       model: bounded(model, 120),
       agent: bounded(agent, 80),
       context_mode: bounded(contextMode || "openclaw_memory", 80),
@@ -330,9 +343,9 @@ function createMeetingSummaryJobService({
     return result;
   }
 
-  function completeJob(jobId, { attemptId, nonce, schemaVersion = 1, title, summary, model, agent, contextMode } = {}) {
+  function completeJob(jobId, { attemptId, nonce, schemaVersion = 1, title, summary, speakerNames, model, agent, contextMode } = {}) {
     if (Number(schemaVersion) !== 1) throw serviceError(400, "unsupported_schema", "unsupported schema version");
-    const result = canonicalResult({ title, summary, model, agent, contextMode });
+    const result = canonicalResult({ title, summary, speakerNames, model, agent, contextMode });
     const timestamp = isoNow();
     const completed = db.transaction(() => {
       const job = getJobRow(jobId);
@@ -355,6 +368,26 @@ function createMeetingSummaryJobService({
       }
       const meeting = db.prepare("SELECT * FROM meetings WHERE id=?").get(job.record_id);
       if (!meeting) throw serviceError(404, "meeting_not_found", "meeting not found");
+      const transcriptSpeakerIds = new Set();
+      for (const raw of [meeting.transcription_segments_json, meeting.transcription_words_json]) {
+        let entries = [];
+        try { entries = JSON.parse(raw || "[]"); } catch {}
+        if (!Array.isArray(entries)) continue;
+        for (const entry of entries) {
+          if (typeof entry?.speaker_id === "string") transcriptSpeakerIds.add(entry.speaker_id);
+        }
+      }
+      for (const speakerId of Object.keys(result.speaker_names)) {
+        if (!transcriptSpeakerIds.has(speakerId)) {
+          throw serviceError(400, "unknown_speaker_id", "speaker_names contains an ID not present in the transcript");
+        }
+      }
+      let existingSpeakerNames = {};
+      try { existingSpeakerNames = JSON.parse(meeting.speaker_names_json || "{}"); } catch {}
+      if (!existingSpeakerNames || typeof existingSpeakerNames !== "object" || Array.isArray(existingSpeakerNames)) {
+        existingSpeakerNames = {};
+      }
+      const mergedSpeakerNames = { ...result.speaker_names, ...existingSpeakerNames };
       const preserveUserTitle = meeting.title_source === "user";
       db.prepare(`
         UPDATE meeting_summary_jobs
@@ -373,13 +406,14 @@ function createMeetingSummaryJobService({
       `).run(timestamp, attemptId);
       db.prepare(`
         UPDATE meetings
-           SET title=?, title_source=?, summary=?, summary_status='completed',
+           SET title=?, title_source=?, summary=?, speaker_names_json=?, summary_status='completed',
                summary_model=?, summary_error=NULL, summary_updated_at=?, updated_at=?
          WHERE id=?
       `).run(
         preserveUserTitle ? meeting.title : result.title,
         preserveUserTitle ? "user" : "ai",
         result.summary,
+        JSON.stringify(mergedSpeakerNames),
         result.model,
         timestamp,
         timestamp,

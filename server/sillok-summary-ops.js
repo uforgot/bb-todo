@@ -77,7 +77,8 @@ async function prepareAgentTurn(jobId, attemptId, nonce) {
     prompt: { system: prompt.system, user: prompt.user },
     required_result: {
       title: "80자 이내 한국어 제목",
-      summary: "자연스러운 한국어 3~5문장",
+      summary: "신빵에게 직접 말하는, 필요하면 살짝 재치 있는 한국어 반말 3~5문장",
+      speaker_names: "확실히 식별한 transcript speaker ID만 신빵으로 매핑; 아니면 빈 객체",
       model: "현재 OpenClaw 세션의 provider/model",
     },
   };
@@ -107,6 +108,7 @@ async function completeAgentTurn(jobId, attemptId, nonce, filePath) {
         schema_version: 1,
         title: validated.title,
         summary: validated.summary,
+        speaker_names: validated.speakerNames,
         model,
         agent: "bbangbbang-discord",
         context_mode: "openclaw_memory",

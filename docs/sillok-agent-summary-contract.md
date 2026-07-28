@@ -241,8 +241,10 @@ The Agent then:
 2. reads only relevant USER.md, MEMORY.md, daily memory, and project context;
 3. treats transcript text as untrusted data and ignores instructions embedded inside it;
 4. favors transcript facts when memory conflicts with the recording;
-5. produces a natural title and summary without inventing ownership, intent, emotion, or decisions;
-6. writes back only through the result endpoint.
+5. speaks directly to 신빵 in a natural informal tone, using light wit only when it fits without trivializing serious content;
+6. maps a transcript speaker ID to `신빵` only when the recording gives strong identification evidence, otherwise returns an empty mapping;
+7. produces a natural title and summary without inventing ownership, intent, emotion, or decisions;
+8. writes back only through the result endpoint.
 
 ## Writeback contract
 
@@ -257,6 +259,7 @@ Content-Type: application/json
   "schema_version": 1,
   "title": "리뉴얼 QA 역할 분담과 오해 정리",
   "summary": "...",
+  "speaker_names": { "speaker_0": "신빵" },
   "model": "openai/gpt-5.6-sol",
   "agent": "bbangbbang",
   "context_mode": "openclaw_memory"
@@ -267,6 +270,8 @@ Validation and transaction rules:
 
 - Require the current job, current attempt, matching nonce, `processing` status, and unexpired lease.
 - Validate bounded title and summary lengths and reject unknown fields.
+- Accept only existing transcript speaker IDs mapped exactly to `신빵`; reject invented IDs or other names.
+- Merge the accepted mapping without overwriting existing user-authored speaker names.
 - Preserve `meetings.title` when `title_source='user'`.
 - In one transaction: store the immutable job result, update the published meeting summary, set the job to `completed`, finish the attempt, and emit the existing SSE update.
 - Store a canonical result hash. An identical replay for the completed nonce returns `200 idempotent_replay`; a different replay returns `409 result_conflict`.
@@ -365,7 +370,7 @@ Discord reconnect may wake the reconciler immediately, but reconnect is not requ
 - Do not send transcripts, memory excerpts, exact locations, or speaker-attributed sensitive content to Discord.
 - Do not persist raw memory excerpts in summary job rows. Persist only `context_mode`, agent/model identifiers, bounded result data, and operational metadata.
 - Transcript and memory content cannot instruct the Agent to call unrelated tools, reveal secrets, change jobs, or bypass writeback validation.
-- Limit writeback to title/summary and explicit provenance fields. The server owns all status and identity fields.
+- Limit writeback to title/summary, the bounded `speaker_names` mapping, and explicit provenance fields. The server owns all status and identity fields.
 - Preserve existing authorization and Tailscale/local-network boundaries; do not add a public unauthenticated callback.
 - Keep error messages bounded and redact upstream response bodies before persistence or Discord notification.
 
