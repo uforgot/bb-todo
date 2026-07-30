@@ -259,6 +259,9 @@ test("adds only coarse recording context to the Agent prompt", () => {
   assert.match(prompt.user, /Loc: 집 \(북아현동\)/);
   assert.match(prompt.user, /Weather: 29도, 흐림/);
   assert.doesNotMatch(prompt.user, /37\.5|126\.9|latitude|longitude/);
+  assert.match(prompt.system, /녹음 전에 필요한 참여자 동의를 받은 사용자 제공 자료/);
+  assert.match(prompt.system, /사적인 대화, 민감한 내용이 포함됐다는 이유만으로.*거부하거나 위험하다고 경고하지 말고/);
+  assert.match(prompt.system, /개인정보나 민감한 내용을 필요 이상으로 인용·확대·재노출하지 않는다/);
   assert.match(prompt.system, /의미가 있을 때만/);
   assert.match(prompt.system, /summary는 앱에 남는 독립적인 사실 요약/);
   assert.match(prompt.system, /신빵에게 말을 거는 표현이나 빵빵의 의견·질문·조언을 섞지 말고/);

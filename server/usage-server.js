@@ -30,6 +30,7 @@ const {
 const { createSillokSummaryDispatcher } = require("./sillok-summary-dispatcher");
 const { createSillokSummaryReconciler } = require("./sillok-summary-reconciler");
 const { MEETING_LIST_QUERY } = require("./meeting-list-query");
+const { getUsableTranscript } = require("./meeting-transcription-result");
 const {
   normalizeLocation,
   resolveLocationLabel,
@@ -2764,6 +2765,26 @@ function buildSpeakerSegments(words) {
   return segments;
 }
 
+async function discardMeetingWithoutTranscript(row) {
+  const filePath = getMeetingArchivePath(row.audio_path);
+  if (filePath) {
+    await fs.promises.rm(filePath, { force: true }).catch(() => {});
+    await fs.promises.rmdir(path.dirname(filePath)).catch(() => {});
+  }
+
+  db.transaction(() => {
+    db.prepare(`
+      DELETE FROM meeting_summary_attempts
+       WHERE job_id IN (SELECT id FROM meeting_summary_jobs WHERE record_id=?)
+    `).run(row.id);
+    db.prepare("DELETE FROM meeting_summary_jobs WHERE record_id=?").run(row.id);
+    db.prepare("DELETE FROM meetings WHERE id=?").run(row.id);
+  })();
+
+  broadcastSSE("meeting-discarded", { meetingId: row.id, reason: "empty_transcript" });
+  console.log(`[meeting-transcription] ${row.id}: discarded because Scribe returned no text`);
+}
+
 const activeMeetingSummaries = new Set();
 
 function getMeetingSummaryModel() {
@@ -2880,6 +2901,11 @@ async function processMeetingTranscription(meetingId) {
 
     row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
     const result = await callScribeForMeeting(row, options);
+    const transcript = getUsableTranscript(result);
+    if (!transcript) {
+      await discardMeetingWithoutTranscript(row);
+      return;
+    }
     const words = normalizeScribeWords(result.words);
     const segments = buildSpeakerSegments(words);
     db.prepare(`
@@ -2905,7 +2931,7 @@ async function processMeetingTranscription(meetingId) {
       Number.isFinite(Number(result.audio_duration_secs)) ? Number(result.audio_duration_secs) : row.duration_seconds,
       JSON.stringify(words),
       JSON.stringify(segments),
-      String(result.text || "").trim(),
+      transcript,
       meetingId
     );
     broadcastSSE("meeting-transcription", { meetingId, status: "completed", speakers: [...new Set(segments.map(segment => segment.speaker_id))] });
