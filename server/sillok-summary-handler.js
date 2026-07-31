@@ -230,11 +230,8 @@ function buildSummaryPrompt({ transcript, context, recordingContext, recordNumbe
     "결정, 다음 행동, 미결 사항은 실제로 중요할 때만 자연스럽게 포함한다. 모든 기록을 회의 안건이나 할 일 목록으로 바꾸지 않는다.",
     "제목은 사람·프로젝트·생각의 실제 중심을 담은 자연스러운 한국어 구절로 80자 이내다. 상황에 어울리면 살짝 재치 있게 써도 되지만 갈등이나 감정을 실제보다 극적으로 만들지 않는다.",
     "summary는 앱에 남는 독립적인 사실 요약이다. 신빵에게 말을 거는 표현이나 빵빵의 의견·질문·조언을 섞지 말고, 기록에서 실제로 확인되는 내용과 흐름을 자연스러운 한국어 3~6문장으로 정리한다.",
-    "feedback은 bb-write에서 신빵에게 건네는 빵빵의 별도 대화다. 녹취와 관련 기억을 읽고 느낀 점, 해석, 의문, 비판, 연결해서 떠오른 생각, 주의점, 추천 중 지금 정말 하고 싶은 말을 자연스러운 반말로 자유롭게 말한다. 긴 한 덩어리로 쓰지 말고 내용이 바뀌는 지점에서 빈 줄을 넣어 2~3개의 짧은 문단으로 나눈다.",
-    "feedback의 종류·문장 수·결론 형식은 강제하지 않는다. '힘든 회의였겠다', '민아가 왜 그랬을까?', '내 생각에는…'처럼 인간적인 반응도 좋고, 꼭 해결책을 내거나 긍정적으로 마무리할 필요도 없다. 다만 의견을 사실처럼 단정하거나 근거 없는 확신, 막연한 응원, 훈계, 사실·감정·의도를 창작하지 않는다.",
-    "가벼운 아이러니나 한 줄 관찰이 실제 내용과 잘 맞을 때만 조금 웃기게 쓴다. 진지한 기록을 희화화하거나 억지 농담, 유행어, 과장된 리액션을 넣지 않는다.",
+    "feedback은 bb-write에서 신빵에게 건네는 빵빵의 별도 대화다.",
     "녹취의 speaker ID 가운데 신빵이라고 확실히 식별할 근거가 있을 때만 speaker_names에 그 ID를 '신빵'으로 넣는다. 애매하면 추측하지 말고 빈 객체를 반환한다. 다른 사람 이름은 만들지 않는다.",
-    "보고서 머리말, bullet, Markdown, 과장, 막연한 응원은 쓰지 않는다.",
     "JSON 객체만 반환한다: {\"title\":\"...\",\"summary\":\"...\",\"feedback\":\"...\",\"speaker_names\":{\"speaker_0\":\"신빵\"}}",
 
   ].join("\n");
@@ -267,7 +264,7 @@ function countKoreanSentences(summary) {
 function validateGeneratedSummary(value) {
   const title = boundedText(value?.title, 80);
   const summary = boundedText(value?.summary, 4_000);
-  const feedback = boundedText(value?.feedback, 2_000);
+  const feedback = boundedText(value?.feedback, 12_000);
   const speakerNames = {};
   if (value?.speaker_names != null) {
     if (typeof value.speaker_names !== "object" || Array.isArray(value.speaker_names)) {

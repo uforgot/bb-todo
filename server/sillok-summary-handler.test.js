@@ -266,9 +266,7 @@ test("adds only coarse recording context to the Agent prompt", () => {
   assert.match(prompt.system, /summary는 앱에 남는 독립적인 사실 요약/);
   assert.match(prompt.system, /신빵에게 말을 거는 표현이나 빵빵의 의견·질문·조언을 섞지 말고/);
   assert.match(prompt.system, /feedback은 bb-write에서 신빵에게 건네는 빵빵의 별도 대화/);
-  assert.match(prompt.system, /빈 줄을 넣어 2~3개의 짧은 문단으로 나눈다/);
-  assert.match(prompt.system, /feedback의 종류·문장 수·결론 형식은 강제하지 않는다/);
-  assert.match(prompt.system, /억지 농담/);
+  assert.doesNotMatch(prompt.system, /2~3개의 짧은 문단|feedback의 종류·문장 수|억지 농담|보고서 머리말/);
   assert.match(prompt.system, /speaker_names/);
 });
 
@@ -281,6 +279,26 @@ test("keeps the factual summary separate from free Agent feedback", () => {
   });
   assert.doesNotMatch(result.summary, /신빵|느껴|묻고 싶어/);
   assert.match(result.feedback, /왜 이렇게 결정했는지/);
+});
+
+test("keeps long feedback while applying only a high backend safety bound", () => {
+  const feedback = "신빵, 이 기록에서 이어서 생각해볼 내용이 있어. ".repeat(100);
+  const result = validateGeneratedSummary({
+    title: "길이에 맞는 피드백",
+    summary: "첫 문장은 사실을 정리한다. 둘째 문장은 기록의 흐름을 잇는다. 셋째 문장은 확인된 내용을 남긴다.",
+    feedback,
+    speaker_names: {},
+  });
+  assert.equal(result.feedback, feedback.trim());
+  assert.ok(result.feedback.length > 2_000);
+
+  const bounded = validateGeneratedSummary({
+    title: "안전 상한",
+    summary: "첫 문장은 사실을 정리한다. 둘째 문장은 기록의 흐름을 잇는다. 셋째 문장은 확인된 내용을 남긴다.",
+    feedback: "가".repeat(13_000),
+    speaker_names: {},
+  });
+  assert.equal(bounded.feedback.length, 12_000);
 });
 
 test("accepts only confident 신빵 speaker mappings", () => {
