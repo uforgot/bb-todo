@@ -9,6 +9,10 @@ const {
   buildSummaryPrompt,
   validateGeneratedSummary,
 } = require("./sillok-summary-handler");
+const {
+  byteLength,
+  createMeetingPipelineStage,
+} = require("./meeting-pipeline-observability");
 require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
 require("dotenv").config({ path: path.join(os.homedir(), ".openclaw", ".env"), quiet: true });
 
@@ -48,42 +52,85 @@ function assertLocator(jobId, attemptId, nonce) {
 
 async function prepareAgentTurn(jobId, attemptId, nonce) {
   assertLocator(jobId, attemptId, nonce);
-  const claim = await request(`/api/meeting-summary-jobs/${jobId}/claim`, {
-    method: "POST",
-    body: {
+  const claimStage = createMeetingPipelineStage({
+    meetingId: `job-${jobId}`,
+    stage: "summary_claim",
+    logger: { log: console.error, error: console.error },
+    metadata: { identifier_kind: "summary_job", job_id: jobId, attempt_id: attemptId },
+  });
+  let claim;
+  try {
+    claim = await request(`/api/meeting-summary-jobs/${jobId}/claim`, {
+      method: "POST",
+      body: {
+        attempt_id: attemptId,
+        nonce,
+        schema_version: 1,
+        agent: "bbangbbang-discord",
+      },
+    });
+    claimStage.complete({ record_id: claim.record_id });
+  } catch (error) {
+    claimStage.fail(error);
+    throw error;
+  }
+  const fetchStage = createMeetingPipelineStage({
+    meetingId: claim.record_id,
+    stage: "summary_fetch",
+    logger: { log: console.error, error: console.error },
+    metadata: { job_id: jobId, attempt_id: attemptId },
+  });
+  let meeting;
+  try {
+    meeting = await request(claim.transcript_url);
+    fetchStage.complete({ response_bytes: byteLength(meeting) });
+  } catch (error) {
+    fetchStage.fail(error);
+    throw error;
+  }
+  const promptStage = createMeetingPipelineStage({
+    meetingId: claim.record_id,
+    stage: "summary_prompt",
+    logger: { log: console.error, error: console.error },
+    metadata: { job_id: jobId, attempt_id: attemptId },
+  });
+  try {
+    const transcript = buildAgentTranscript(meeting);
+    if (!transcript.trim()) throw new Error("meeting transcript is empty");
+    const context = collectMemoryContext({ transcript });
+    const prompt = buildSummaryPrompt({
+      transcript,
+      context,
+      recordingContext: meeting?.context,
+      recordNumber: claim.record_number,
+    });
+    promptStage.complete({
+      transcript_chars: transcript.length,
+      prompt_bytes: byteLength(prompt.system) + byteLength(prompt.user),
+      transcript_truncated: prompt.transcriptTruncated,
+      context_sources: context.excerpts.length,
+    });
+    return {
+      schema: "SILLOK_AGENT_TURN_V1",
+      job_id: jobId,
+      record_id: claim.record_id,
+      record_number: claim.record_number,
       attempt_id: attemptId,
       nonce,
-      schema_version: 1,
-      agent: "bbangbbang-discord",
-    },
-  });
-  const meeting = await request(claim.transcript_url);
-  const transcript = buildAgentTranscript(meeting);
-  if (!transcript.trim()) throw new Error("meeting transcript is empty");
-  const context = collectMemoryContext({ transcript });
-  const prompt = buildSummaryPrompt({
-    transcript,
-    context,
-    recordingContext: meeting?.context,
-    recordNumber: claim.record_number,
-  });
-  return {
-    schema: "SILLOK_AGENT_TURN_V1",
-    job_id: jobId,
-    record_id: claim.record_id,
-    record_number: claim.record_number,
-    attempt_id: attemptId,
-    nonce,
-    context: { kind: context.kind, project: context.project },
-    prompt: { system: prompt.system, user: prompt.user },
-    required_result: {
-      title: "80자 이내 한국어 제목",
-      summary: "AI 의견 없이 기록의 사실과 흐름만 담은 독립적인 한국어 요약 3~6문장",
-      feedback: "bb-write에서 신빵에게 직접 건네는 빵빵의 자유로운 반말 피드백",
-      speaker_names: "확실히 식별한 transcript speaker ID만 신빵으로 매핑; 아니면 빈 객체",
-      model: "현재 OpenClaw 세션의 provider/model",
-    },
-  };
+      context: { kind: context.kind, project: context.project },
+      prompt: { system: prompt.system, user: prompt.user },
+      required_result: {
+        title: "80자 이내 한국어 제목",
+        summary: "AI 의견 없이 기록의 사실과 흐름만 담은 독립적인 한국어 요약 3~6문장",
+        feedback: "bb-write에서 신빵에게 직접 건네는 빵빵의 자유로운 반말 피드백",
+        speaker_names: "확실히 식별한 transcript speaker ID만 신빵으로 매핑; 아니면 빈 객체",
+        model: "현재 OpenClaw 세션의 provider/model",
+      },
+    };
+  } catch (error) {
+    promptStage.fail(error);
+    throw error;
+  }
 }
 
 function readResultFile(filePath) {
@@ -101,8 +148,19 @@ async function completeAgentTurn(jobId, attemptId, nonce, filePath) {
   const validated = validateGeneratedSummary(value);
   const model = String(value?.model || "").trim().slice(0, 120);
   if (!model) throw new Error("result model is required");
+  const writebackStage = createMeetingPipelineStage({
+    meetingId: `job-${jobId}`,
+    stage: "summary_writeback",
+    logger: { log: console.error, error: console.error },
+    metadata: {
+      identifier_kind: "summary_job",
+      job_id: jobId,
+      attempt_id: attemptId,
+      result_bytes: byteLength(value),
+    },
+  });
   try {
-    return await request(`/api/meeting-summary-jobs/${jobId}/result`, {
+    const result = await request(`/api/meeting-summary-jobs/${jobId}/result`, {
       method: "POST",
       body: {
         attempt_id: attemptId,
@@ -116,6 +174,11 @@ async function completeAgentTurn(jobId, attemptId, nonce, filePath) {
         context_mode: "openclaw_memory",
       },
     });
+    writebackStage.complete({ idempotent_replay: Boolean(result?.idempotent_replay) });
+    return result;
+  } catch (error) {
+    writebackStage.fail(error);
+    throw error;
   } finally {
     fs.rmSync(resolved, { force: true });
   }

@@ -80,7 +80,10 @@ const SILLOK_SUMMARY_DISPATCH_TIMEOUT_MS = parseInt(process.env.SILLOK_SUMMARY_D
 const SILLOK_SUMMARY_DISPATCH_RETRY_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_RETRY_MS || "30000", 10);
 const SILLOK_SUMMARY_RECONCILE_MS = parseInt(process.env.SILLOK_SUMMARY_RECONCILE_MS || "15000", 10);
 const SILLOK_SUMMARY_DISPATCH_STALE_MS = parseInt(process.env.SILLOK_SUMMARY_DISPATCH_STALE_MS || "20000", 10);
-const SILLOK_SUMMARY_ACK_TIMEOUT_MS = parseInt(process.env.SILLOK_SUMMARY_ACK_TIMEOUT_MS || "120000", 10);
+// Agent acknowledgement has reached 132s in production even when the eventual
+// summary completed successfully. Keep queue contention from creating a false
+// failure before transcript processing has started.
+const SILLOK_SUMMARY_ACK_TIMEOUT_MS = parseInt(process.env.SILLOK_SUMMARY_ACK_TIMEOUT_MS || "300000", 10);
 const SILLOK_SUMMARY_MAX_ATTEMPTS = parseInt(process.env.SILLOK_SUMMARY_MAX_ATTEMPTS || "5", 10);
 const VOICE_CONFIG_PATH = path.join(__dirname, "voice-config.json");
 const DEFAULT_TODO_QUEUE_BOT_KEY = process.env.TODO_QUEUE_BOT_KEY || "bbangbbang";
@@ -2509,11 +2512,20 @@ async function receiveMeetingAudio(req, meetingId) {
     },
   });
 
+  const uploadStage = createMeetingPipelineStage({
+    meetingId,
+    stage: "audio_upload",
+    metadata: {
+      declared_bytes: contentLength || null,
+      max_bytes: MEETING_UPLOAD_MAX_BYTES,
+    },
+  });
   try {
     await pipeline(req, counter, fs.createWriteStream(tempPath, { flags: "wx" }));
     if (sizeBytes === 0) throw Object.assign(new Error("meeting audio is empty"), { statusCode: 400 });
     await fs.promises.rename(tempPath, filePath);
   } catch (error) {
+    uploadStage.fail(error, { received_bytes: sizeBytes });
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
     throw error;
   }
@@ -2524,7 +2536,13 @@ async function receiveMeetingAudio(req, meetingId) {
   const sha256 = hash.digest("hex");
   const recordNumber = existing?.record_number
     || db.prepare("SELECT COALESCE(MAX(record_number), 0) + 1 AS value FROM meetings").get().value;
-  db.prepare(`
+  const storeStage = createMeetingPipelineStage({
+    meetingId,
+    stage: "audio_store",
+    metadata: { audio_bytes: sizeBytes, duration_seconds: durationSeconds },
+  });
+  try {
+    db.prepare(`
     INSERT INTO meetings (
       id, record_number, recorded_at, recorded_date, audio_path, original_filename,
       mime_type, size_bytes, duration_seconds, sha256,
@@ -2582,7 +2600,14 @@ async function receiveMeetingAudio(req, meetingId) {
     timeLabel || null,
     weather?.label || null,
     weather?.observedAt || null
-  );
+    );
+    storeStage.complete();
+    uploadStage.complete({ received_bytes: sizeBytes, duration_seconds: durationSeconds });
+  } catch (error) {
+    storeStage.fail(error);
+    uploadStage.fail(error, { received_bytes: sizeBytes });
+    throw error;
+  }
 
   return db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
 }
@@ -2623,6 +2648,11 @@ function sendMeetingAudio(req, res, row) {
   res.writeHead(200, { ...headers, "Content-Length": stat.size });
   fs.createReadStream(filePath).pipe(res);
 }
+
+const {
+  byteLength: meetingPayloadBytes,
+  createMeetingPipelineStage,
+} = require("./meeting-pipeline-observability");
 
 const activeMeetingTranscriptions = new Set();
 
@@ -2693,6 +2723,18 @@ async function callScribeForMeeting(row, options) {
   })());
 
   const timeoutMs = Math.max(60_000, Number(process.env.MEETING_TRANSCRIPTION_TIMEOUT_MS) || 2 * 60 * 60 * 1000);
+  const requestStage = createMeetingPipelineStage({
+    meetingId: row.id,
+    stage: "scribe_request",
+    metadata: {
+      attempt: Number(row.transcription_attempts || 0),
+      model: options.model_id,
+      duration_seconds: row.duration_seconds,
+      audio_bytes: stat.size,
+      request_bytes: contentLength,
+      timeout_ms: timeoutMs,
+    },
+  });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error("Scribe transcription timed out")), timeoutMs);
   try {
@@ -2715,7 +2757,16 @@ async function callScribeForMeeting(row, options) {
       throw new Error(`Scribe ${response.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
     }
     if (!payload || !Array.isArray(payload.words)) throw new Error("Scribe response did not include words");
+    requestStage.complete({
+      http_status: response.status,
+      response_bytes: meetingPayloadBytes(responseText),
+      words_count: payload.words.length,
+      transcript_chars: String(payload.text || "").length,
+    });
     return payload;
+  } catch (error) {
+    requestStage.fail(error);
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -2884,6 +2935,10 @@ function queueMeetingSummary(meetingId, force = false) {
 async function processMeetingTranscription(meetingId) {
   if (activeMeetingTranscriptions.has(meetingId)) return;
   activeMeetingTranscriptions.add(meetingId);
+  const transcriptionStage = createMeetingPipelineStage({
+    meetingId,
+    stage: "transcription_total",
+  });
   try {
     let row = db.prepare("SELECT * FROM meetings WHERE id=?").get(meetingId);
     if (!row) throw new Error("meeting not found");
@@ -2904,11 +2959,26 @@ async function processMeetingTranscription(meetingId) {
     const transcript = getUsableTranscript(result);
     if (!transcript) {
       await discardMeetingWithoutTranscript(row);
+      transcriptionStage.complete({ result: "discarded_empty_transcript" });
       return;
     }
     const words = normalizeScribeWords(result.words);
     const segments = buildSpeakerSegments(words);
-    db.prepare(`
+    const wordsJSON = JSON.stringify(words);
+    const segmentsJSON = JSON.stringify(segments);
+    const storeStage = createMeetingPipelineStage({
+      meetingId,
+      stage: "transcription_store",
+      metadata: {
+        transcript_chars: transcript.length,
+        words_count: words.length,
+        segments_count: segments.length,
+        words_bytes: meetingPayloadBytes(wordsJSON),
+        segments_bytes: meetingPayloadBytes(segmentsJSON),
+      },
+    });
+    try {
+      db.prepare(`
       UPDATE meetings
          SET transcription_status='completed',
              transcription_error=NULL,
@@ -2929,18 +2999,31 @@ async function processMeetingTranscription(meetingId) {
       normalizeOptionalText(result.language_code) || null,
       Number.isFinite(Number(result.language_probability)) ? Number(result.language_probability) : null,
       Number.isFinite(Number(result.audio_duration_secs)) ? Number(result.audio_duration_secs) : row.duration_seconds,
-      JSON.stringify(words),
-      JSON.stringify(segments),
+      wordsJSON,
+      segmentsJSON,
       transcript,
       meetingId
-    );
+      );
+      storeStage.complete();
+    } catch (error) {
+      storeStage.fail(error);
+      throw error;
+    }
     broadcastSSE("meeting-transcription", { meetingId, status: "completed", speakers: [...new Set(segments.map(segment => segment.speaker_id))] });
     if (MEETING_AGENT_SUMMARY_ENABLED) {
-      meetingSummaryJobService.createJob(meetingId, { trigger: "transcription_completed" });
+      const queueStage = createMeetingPipelineStage({ meetingId, stage: "summary_queue" });
+      const job = meetingSummaryJobService.createJob(meetingId, { trigger: "transcription_completed" });
+      queueStage.complete({ job_id: job.id, transcript_chars: transcript.length });
     } else {
       queueMeetingSummary(meetingId, true);
     }
+    transcriptionStage.complete({
+      transcript_chars: transcript.length,
+      words_count: words.length,
+      segments_count: segments.length,
+    });
   } catch (error) {
+    transcriptionStage.fail(error);
     const message = String(error?.message || error || "transcription failed").slice(0, 2000);
     db.prepare(`
       UPDATE meetings
